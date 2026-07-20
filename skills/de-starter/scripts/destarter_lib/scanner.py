@@ -16,8 +16,9 @@ P1_PATTERNS = (
     re.compile(r"/api/[A-Za-z0-9_./:-]+"),
 )
 SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*)"
-    r"\s*[:=]\s*[\"']([^\"']{8,})[\"']"
+    r"(?ix)\b([A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*)[\"']?"
+    r"\s*(?:=\s*|:\s*(?:[A-Z_$][A-Z0-9_$<>\[\]| ,.?]*\s*=\s*)?)"
+    r"[\"']([^\"']{8,})[\"']"
 )
 P2_PARTS = {
     "demo", "demos", "example", "examples", "sample", "samples", "testimonials",
@@ -41,13 +42,23 @@ def _finding_id(raw_id: str) -> str:
     return "F-" + sha256(raw_id.encode("utf-8")).hexdigest()[:12]
 
 
+def _source_terms(source_terms: Sequence[str]) -> Sequence[str]:
+    """Canonicalize case variants and make equal-length ordering reproducible."""
+    canonical = {}
+    for source_term in source_terms:
+        term = source_term.strip()
+        if not term:
+            continue
+        key = term.casefold()
+        previous = canonical.get(key)
+        if previous is None or term < previous:
+            canonical[key] = term
+    return sorted(canonical.values(), key=lambda value: (-len(value), value.casefold(), value))
+
+
 def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult:
     """Find confirmed source terms and high-risk literal secrets in a project."""
-    terms = sorted(
-        {term.strip() for term in source_terms if term.strip()},
-        key=len,
-        reverse=True,
-    )
+    terms = _source_terms(source_terms)
     files = list(iter_project_files(project_root))
     findings = []
 
@@ -56,28 +67,26 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
         path_is_p2 = any(part.lower() in P2_PARTS for part in path.parts)
 
         for term in terms:
-            match = re.search(re.escape(term), record.relpath, re.I)
-            if match is None:
-                continue
-            risk, _ = _risk(record.relpath, "")
-            raw_id = "{}:path:{}:{}".format(
-                record.relpath, match.start(), match.group(0)
-            )
-            findings.append(
-                Finding(
-                    finding_id=_finding_id(raw_id),
-                    relpath=record.relpath,
-                    line=0,
-                    column=match.start() + 1,
-                    matched=match.group(0),
-                    category="file-or-directory-name",
-                    risk=risk,
-                    evidence="path contains confirmed source term: {}".format(
-                        match.group(0)
-                    ),
-                    sha256=record.sha256,
+            for match in re.finditer(re.escape(term), record.relpath, re.I):
+                risk, _ = _risk(record.relpath, "")
+                raw_id = "{}:path:{}:{}".format(
+                    record.relpath, match.start(), match.group(0)
                 )
-            )
+                findings.append(
+                    Finding(
+                        finding_id=_finding_id(raw_id),
+                        relpath=record.relpath,
+                        line=0,
+                        column=match.start() + 1,
+                        matched=match.group(0),
+                        category="file-or-directory-name",
+                        risk=risk,
+                        evidence="path contains confirmed source term: {}".format(
+                            match.group(0)
+                        ),
+                        sha256=record.sha256,
+                    )
+                )
 
         if path_is_p2:
             raw_id = "{}:path-inventory".format(record.relpath)
@@ -102,8 +111,9 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
             continue
 
         for line_number, line_text in enumerate(text.splitlines(), start=1):
-            secret_match = SECRET_ASSIGNMENT_RE.search(line_text)
-            if secret_match and "example" not in secret_match.group(2).lower():
+            for secret_match in SECRET_ASSIGNMENT_RE.finditer(line_text):
+                if "example" in secret_match.group(2).lower():
+                    continue
                 raw_id = "{}:{}:secret:{}".format(
                     record.relpath, line_number, secret_match.group(1)
                 )

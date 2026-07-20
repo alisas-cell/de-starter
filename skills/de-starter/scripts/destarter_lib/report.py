@@ -8,14 +8,31 @@ from .models import AuditResult
 
 
 SECRET_VALUE_RE = re.compile(
-    r"(?i)((?:api[_-]?key|secret|token|password)[A-Z0-9_ -]*[=:]\s*)"
+    r"(?ix)((?:api[_-]?key|secret|token|password)[A-Z0-9_ -]*[\"']?\s*"
+    r"(?:=\s*|:\s*(?:[A-Z_$][A-Z0-9_$<>\[\]| ,.?]*\s*=\s*)?))"
     r"(?:[\"'][^\"']+[\"']|[^\s,;]+)"
 )
+RISK_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
 def redact_evidence(value: str) -> str:
     """Remove assignment values from evidence before it leaves the scanner."""
     return SECRET_VALUE_RE.sub(r"\1[REDACTED]", value)
+
+
+def _ordered_findings(audit: AuditResult):
+    return sorted(
+        audit.findings,
+        key=lambda item: (
+            RISK_ORDER[item.risk.value],
+            item.relpath,
+            item.line,
+            item.column,
+            item.category,
+            item.matched,
+            item.finding_id,
+        ),
+    )
 
 
 def audit_to_dict(audit: AuditResult) -> Dict[str, object]:
@@ -28,7 +45,7 @@ def audit_to_dict(audit: AuditResult) -> Dict[str, object]:
                 "risk": item.risk.value,
                 "evidence": redact_evidence(item.evidence),
             }
-            for item in audit.findings
+            for item in _ordered_findings(audit)
         ],
         "files": [asdict(item) for item in audit.files],
     }
@@ -57,10 +74,7 @@ def write_audit_reports(audit: AuditResult, run_dir: Path) -> None:
         "| ID | Risk | Category | Location | Evidence |",
         "| --- | --- | --- | --- | --- |",
     ]
-    for item in sorted(
-        audit.findings,
-        key=lambda value: (value.risk.value, value.relpath, value.line),
-    ):
+    for item in _ordered_findings(audit):
         evidence = redact_evidence(item.evidence).replace("|", "\\|").replace("`", "'")
         lines.append(
             "| {} | {} | {} | `{}:{}:{}` | {} |".format(

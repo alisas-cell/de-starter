@@ -44,6 +44,78 @@ class ScannerReportTests(unittest.TestCase):
             self.assertNotIn("live-secret-value", rendered)
             self.assertNotIn("live-secret-value", json.dumps(payload))
 
+    def test_typed_typescript_secret_is_p0_and_redacted(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = copy_fixture("nextjs-starter", Path(tmp))
+            (root / "src").mkdir(exist_ok=True)
+            (root / "src" / "config.ts").write_text(
+                'const NORTHSTAR_API_TOKEN: string = "typed-live-secret-value"; // Northstar\n',
+                encoding="utf-8",
+            )
+            audit = scan_project(root, ["Northstar"])
+            secret_finding = next(
+                item for item in audit.findings
+                if item.category == "possible-secret"
+            )
+            self.assertEqual(secret_finding.risk.value, "P0")
+            run_dir = Path(tmp) / "run"
+            write_audit_reports(audit, run_dir)
+            rendered = (run_dir / "audit.md").read_text(encoding="utf-8")
+            payload = json.loads((run_dir / "audit.json").read_text(encoding="utf-8"))
+            self.assertNotIn("typed-live-secret-value", rendered)
+            self.assertNotIn("typed-live-secret-value", json.dumps(payload))
+
+    def test_later_live_secret_is_not_hidden_by_example_assignment(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = copy_fixture("nextjs-starter", Path(tmp))
+            (root / "src").mkdir(exist_ok=True)
+            (root / "src" / "config.ts").write_text(
+                'const SAMPLE_API_TOKEN = "example-token-value"; '
+                'const LIVE_API_TOKEN = "later-live-secret-value";\n',
+                encoding="utf-8",
+            )
+            audit = scan_project(root, [])
+            secrets = [
+                item for item in audit.findings
+                if item.category == "possible-secret"
+            ]
+            self.assertEqual([item.matched for item in secrets], ["LIVE_API_TOKEN"])
+            self.assertEqual(secrets[0].risk.value, "P0")
+
+    def test_case_variant_terms_do_not_duplicate_ids_and_equal_terms_sort(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = copy_fixture("nextjs-starter", Path(tmp))
+            audit = scan_project(root, ["zulu", "Alpha", "Northstar", "northstar"])
+            self.assertEqual(audit.source_terms, ["Northstar", "Alpha", "zulu"])
+            northstar_findings = [
+                item for item in audit.findings
+                if item.relpath == "messages/en.json" and item.matched == "Northstar"
+            ]
+            self.assertEqual(len(northstar_findings), 1)
+            self.assertEqual(
+                len({item.finding_id for item in audit.findings}), len(audit.findings)
+            )
+
+    def test_reports_all_path_occurrences_and_orders_json_by_risk(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = copy_fixture("nextjs-starter", Path(tmp))
+            nested = root / "northstar" / "northstar-logo.txt"
+            nested.parent.mkdir()
+            nested.write_text("no source terms here\n", encoding="utf-8")
+            audit = scan_project(root, ["Northstar", "starter_monthly"])
+            path_findings = [
+                item for item in audit.findings
+                if item.relpath == "northstar/northstar-logo.txt"
+            ]
+            self.assertEqual([item.column for item in path_findings], [1, 11])
+            run_dir = Path(tmp) / "run"
+            write_audit_reports(audit, run_dir)
+            payload = json.loads((run_dir / "audit.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                [item["risk"] for item in payload["findings"]],
+                sorted(item["risk"] for item in payload["findings"]),
+            )
+
     def test_binary_demo_asset_is_inventoried_as_p2(self) -> None:
         with TemporaryDirectory() as tmp:
             root = copy_fixture("nextjs-starter", Path(tmp))
