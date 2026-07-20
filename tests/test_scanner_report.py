@@ -87,6 +87,27 @@ class ScannerReportTests(unittest.TestCase):
             self.assertNotIn("escaped-live-secret-value", rendered)
             self.assertNotIn("escaped-live-secret-value", json.dumps(payload))
 
+    def test_unquoted_secret_is_p0_and_redacted(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = copy_fixture("nextjs-starter", Path(tmp))
+            (root / "src").mkdir(exist_ok=True)
+            (root / "src" / "config.sh").write_text(
+                "export NORTHSTAR_API_TOKEN=unquoted-live-secret-value # Northstar\n",
+                encoding="utf-8",
+            )
+            audit = scan_project(root, ["Northstar"])
+            secret_finding = next(
+                item for item in audit.findings
+                if item.category == "possible-secret"
+            )
+            self.assertEqual(secret_finding.risk.value, "P0")
+            run_dir = Path(tmp) / "run"
+            write_audit_reports(audit, run_dir)
+            rendered = (run_dir / "audit.md").read_text(encoding="utf-8")
+            payload = json.loads((run_dir / "audit.json").read_text(encoding="utf-8"))
+            self.assertNotIn("unquoted-live-secret-value", rendered)
+            self.assertNotIn("unquoted-live-secret-value", json.dumps(payload))
+
     def test_repeated_secret_identifier_on_one_line_has_unique_ids(self) -> None:
         with TemporaryDirectory() as tmp:
             root = copy_fixture("nextjs-starter", Path(tmp))

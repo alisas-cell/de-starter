@@ -18,7 +18,10 @@ P1_PATTERNS = (
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?ix)\b(?P<name>[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*)[\"']?"
     r"\s*(?:=\s*|:\s*(?:[A-Z_$][A-Z0-9_$<>\[\]| ,.?]*\s*=\s*)?)"
-    r"(?P<quote>[\"'])(?P<value>(?:\\.|(?! (?P=quote) ).){8,})(?P=quote)"
+    r"(?:"
+    r"(?P<quote>[\"'])(?P<quoted_value>(?:\\.|(?! (?P=quote) ).){8,})(?P=quote)"
+    r"|(?P<unquoted_value>[^\s#;,]{8,})"
+    r")"
 )
 P2_PARTS = {
     "demo", "demos", "example", "examples", "sample", "samples", "testimonials",
@@ -112,7 +115,11 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
 
         for line_number, line_text in enumerate(text.splitlines(), start=1):
             for secret_match in SECRET_ASSIGNMENT_RE.finditer(line_text):
-                if "example" in secret_match.group("value").lower():
+                secret_value = (
+                    secret_match.group("quoted_value")
+                    or secret_match.group("unquoted_value")
+                )
+                if "example" in secret_value.lower():
                     continue
                 raw_id = "{}:{}:secret:{}:{}".format(
                     record.relpath,
