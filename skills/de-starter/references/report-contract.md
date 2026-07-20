@@ -1,5 +1,11 @@
 # Report Contract
 
+## At any mandatory stop
+
+Before requesting input, give a compact status report: no project files changed; P0 and LICENSE obligations remain protected; source candidates, evidence, recommendation, and the exact source-term confirmation requested before audit; both brand choices (the complete real profile or the exact neutral placeholders); P1 identifiers separated from P3 display text, with migration and rollback requested for any P1 replacement; and a recommended, explicitly confirmable choice for each P2 category (demo routes, sample content, testimonials, test data, assets), including every deletion.
+
+Promise that once gate-one decisions are approved, the external run directory will contain `preview.diff` and the other preview artifacts. State that you will show that exact current diff and approval token, then stop for gate two before editing.
+
 Present artifacts and decisions in this order:
 
 1. Project kind, package manager, Git state, and validation commands.
