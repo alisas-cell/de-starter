@@ -52,6 +52,34 @@ git diff --check
 passed
 ```
 
+## Nested ignored-file follow-up
+
+### RED
+
+Added a delete-scope regression containing a nested Git worktree/submodule
+`.git` file. The operation was incorrectly accepted because the scope scan
+only recognized ignored directories and secret files.
+
+### GREEN
+
+Operation-root scanning now rejects ignored-name files as well as ignored
+directories and secret files. A root `.git` file remains safely excluded from
+the preview inventory without rejecting a normal preview.
+
+```text
+python3 -m unittest tests.test_preview_apply -v
+15 tests passed
+
+python3 -m unittest discover -s tests -v
+53 tests passed
+
+python3 -m compileall -q skills/de-starter/scripts tests
+passed
+
+git diff --check
+passed
+```
+
 ## Final Important follow-up
 
 ### RED

@@ -232,6 +232,17 @@ class PreviewApplyTests(unittest.TestCase):
             manifest = create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
             self.assertFalse((Path(manifest.preview_root) / ".git").exists())
 
+    def test_preview_refuses_operation_root_with_nested_git_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "app" / "demo" / ".git").write_text("gitdir: /outside/module\n", encoding="utf-8")
+            audit = scan_project(root, ["Northstar"])
+            path = base / "decisions.json"
+            path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [], "delete_paths": ["app/demo"]}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "ignored metadata"):
+                create_preview(root, base / "run", audit, load_decisions(path, audit))
+
     def test_placeholder_artifact_uses_neutral_values_and_aggregates_identifiers(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)

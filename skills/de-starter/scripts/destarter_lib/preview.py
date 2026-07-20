@@ -130,7 +130,7 @@ def _contains_secret_or_ignored(root: Path, relpath: str) -> bool:
     for directory, dirs, files in os.walk(str(target), followlinks=False):
         if any(_is_ignored_name(name) or _is_secret_name(name) for name in dirs):
             return True
-        if any(_is_secret_name(name) for name in files):
+        if any(_is_ignored_name(name) or _is_secret_name(name) for name in files):
             return True
     return False
 
