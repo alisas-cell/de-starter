@@ -114,17 +114,35 @@ def _validate_invariant_paths(paths: Iterable[str], operation: str) -> None:
 
 def _validate_audited_paths(audit: AuditResult, paths: Iterable[str], operation: str) -> None:
     for path in paths:
-        findings = list(_findings_under(audit, path))
+        files = [item for item in audit.files if _contains(path, item.relpath)]
+        if not files:
+            scope = "audited P2 scope" if operation == "delete" else "audited scope"
+            raise DecisionError(
+                "{}_paths must correspond to an {}: {}".format(operation, scope, path)
+            )
         if operation == "delete":
-            approved = any(item.risk is RiskLevel.P2 for item in findings)
+            exact_authorized = lambda relpath: any(
+                item.relpath == relpath and item.risk is RiskLevel.P2
+                for item in audit.findings
+            )
             message = "delete_paths must correspond to an audited P2 scope"
         else:
-            approved = any(
-                item.risk is RiskLevel.P2 or item.category == "file-or-directory-name"
-                for item in findings
+            exact_authorized = lambda relpath: any(
+                item.relpath == relpath
+                and (item.risk is RiskLevel.P2 or item.category == "file-or-directory-name")
+                for item in audit.findings
             )
             message = "rename_paths must correspond to an audited P2 or path finding scope"
-        if not approved:
+        if not all(exact_authorized(item.relpath) for item in files):
+            raise DecisionError(message + ": " + path)
+        authorized_roots = set()
+        for item in files:
+            if exact_authorized(item.relpath):
+                authorized_roots.add(item.relpath)
+                parent = item.relpath.rpartition("/")[0]
+                if parent:
+                    authorized_roots.add(parent)
+        if path not in authorized_roots:
             raise DecisionError(message + ": " + path)
 
 
@@ -243,6 +261,11 @@ def load_decisions(path: Path, audit: AuditResult) -> DecisionSet:
         if any(_contains(deleted, source) or _contains(source, deleted) for deleted in delete_paths):
             raise DecisionError("rename_paths cannot overlap delete_paths")
         if any(
+            _contains(deleted, destination) or _contains(destination, deleted)
+            for deleted in delete_paths
+        ):
+            raise DecisionError("rename_paths destinations cannot overlap delete_paths")
+        if any(
             _contains(other_source, destination) or _contains(destination, other_source)
             for other_source in rename_paths
         ):
@@ -260,6 +283,7 @@ def load_decisions(path: Path, audit: AuditResult) -> DecisionSet:
 
     _validate_invariant_paths(delete_paths, "delete")
     _validate_invariant_paths(rename_paths, "rename")
+    _validate_invariant_paths(destinations, "rename destination")
     _validate_audited_paths(audit, delete_paths, "delete")
     _validate_audited_paths(audit, rename_paths, "rename")
     _validate_protected_paths(audit, delete_paths, "delete")

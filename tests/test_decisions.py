@@ -209,6 +209,31 @@ class DecisionTests(unittest.TestCase):
                         "actions": [{"finding_id": finding.finding_id, "action": value}],
                     }), self.audit)
 
+    def test_filesystem_scope_cannot_expand_beyond_its_exact_audited_root(self) -> None:
+        for operation in ("delete", "rename"):
+            with self.subTest(operation=operation):
+                payload = {"brand_mode": "placeholder", "brand_profile": {}, "actions": []}
+                if operation == "delete":
+                    payload["delete_paths"] = ["app"]
+                else:
+                    payload["rename_paths"] = {"app": "showcase"}
+                with self.assertRaisesRegex(DecisionError, "audited"):
+                    load_decisions(self.write(payload), self.audit)
+        decisions = load_decisions(self.write({
+            "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+            "delete_paths": ["app/demo"],
+        }), self.audit)
+        self.assertEqual(decisions.delete_paths, ["app/demo"])
+
+    def test_rename_destinations_cannot_target_protected_roots(self) -> None:
+        for destination in [".git/destarter", "docs/NOTICE", "node_modules/output", "build/output", ".cache/output"]:
+            with self.subTest(destination=destination):
+                with self.assertRaisesRegex(DecisionError, "protected"):
+                    load_decisions(self.write({
+                        "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                        "rename_paths": {"app/demo": destination},
+                    }), self.audit)
+
 
 if __name__ == "__main__":
     unittest.main()
