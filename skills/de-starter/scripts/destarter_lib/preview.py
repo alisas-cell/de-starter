@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
@@ -108,7 +109,7 @@ def _state_hash(root: Path, excluded_names: Iterable[str] = ()) -> str:
         current = Path(directory)
         dirs[:] = [name for name in dirs if not _is_ignored_name(name) and not _is_secret_name(name)]
         rel_dir = current.relative_to(root).as_posix()
-        entries.append({"kind": "dir", "path": rel_dir, "mode": current.stat().st_mode & 0o777})
+        entries.append({"kind": "dir", "path": rel_dir, "mode": stat.S_IMODE(current.stat().st_mode)})
         for name in sorted(files):
             if name in excluded or _is_ignored_name(name) or _is_secret_name(name):
                 continue
@@ -116,7 +117,7 @@ def _state_hash(root: Path, excluded_names: Iterable[str] = ()) -> str:
             if path.is_symlink() or not path.is_file():
                 continue
             entries.append({"kind": "file", "path": path.relative_to(root).as_posix(),
-                            "mode": path.stat().st_mode & 0o777, "sha256": sha256_file(path)})
+                            "mode": stat.S_IMODE(path.stat().st_mode), "sha256": sha256_file(path)})
     return _token({"state": sorted(entries, key=lambda item: (str(item["path"]), str(item["kind"])))})
 
 

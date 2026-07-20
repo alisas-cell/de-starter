@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
 import os
+import shutil
 import stat
 import sys
 import unittest
@@ -115,6 +116,9 @@ class PreviewApplyTests(unittest.TestCase):
             restore = json.loads(Path(result.restore_manifest).read_text(encoding="utf-8"))
             self.assertTrue((Path(result.backup_root) / ".destarter-backup-owner.json").exists())
             self.assertTrue(restore["operations"])
+            for operation in restore["operations"]:
+                self.assertTrue(Path(operation["backup"]).exists())
+            self.assertFalse(any(".destarter-quarantine-" in item.name for item in root.rglob("*")))
             self.assertTrue((base / "run" / "reverse.diff").exists())
 
     def test_apply_rolls_back_when_a_mutation_fails(self) -> None:
@@ -123,7 +127,7 @@ class PreviewApplyTests(unittest.TestCase):
             root = copy_fixture("nextjs-starter", base)
             original = (root / "messages/en.json").read_bytes()
             manifest = self._replacement_preview(root, base / "run")
-            with patch("destarter_lib.apply._fd_copy_file", side_effect=OSError("injected failure")):
+            with patch("destarter_lib.apply._create_outputs", side_effect=OSError("injected failure")):
                 with self.assertRaisesRegex(ApplyError, "rolled back"):
                     apply_preview(root, base / "run", manifest.approval_token)
             self.assertEqual((root / "messages/en.json").read_bytes(), original)
@@ -155,22 +159,41 @@ class PreviewApplyTests(unittest.TestCase):
             with self.assertRaisesRegex(ApplyError, "source changed"):
                 apply_preview(root, base / "run", manifest.approval_token)
 
-    def test_apply_rechecks_state_after_backup_before_any_write(self) -> None:
+    def test_apply_rechecks_standalone_original_at_final_transaction_entry(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = copy_fixture("nextjs-starter", base)
             manifest = self._replacement_preview(root, base / "run")
             from destarter_lib import apply as module
-            original_backup = module._backup
+            original_transaction = module._fd_transaction
 
-            def mutate_after_backup(*args):
-                result = original_backup(*args)
+            def mutate_at_entry(transaction):
                 (root / "messages/en.json").write_text("changed after backup", encoding="utf-8")
-                return result
+                return original_transaction(transaction)
 
-            with patch("destarter_lib.apply._backup", side_effect=mutate_after_backup):
+            with patch("destarter_lib.apply._fd_transaction", side_effect=mutate_at_entry):
                 with self.assertRaisesRegex(ApplyError, "source changed"):
                     apply_preview(root, base / "run", manifest.approval_token)
+            self.assertFalse((base / "run" / "backup").exists())
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            target = root / "messages/en.json"
+            from destarter_lib import apply as module
+            original_transaction = module._fd_transaction
+
+            def replace_at_entry(transaction):
+                replacement = target.with_name("late-user-file")
+                replacement.write_text("late replacement", encoding="utf-8")
+                os.replace(str(replacement), str(target))
+                return original_transaction(transaction)
+
+            with patch("destarter_lib.apply._fd_transaction", side_effect=replace_at_entry):
+                with self.assertRaisesRegex(ApplyError, "source changed"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertEqual(target.read_text(encoding="utf-8"), "late replacement")
             self.assertFalse((base / "run" / "backup").exists())
 
     def test_apply_rolls_back_when_success_artifact_write_fails(self) -> None:
@@ -179,7 +202,17 @@ class PreviewApplyTests(unittest.TestCase):
             root = copy_fixture("nextjs-starter", base)
             original = (root / "messages/en.json").read_bytes()
             manifest = self._replacement_preview(root, base / "run")
-            with patch("destarter_lib.apply._write_text_atomic", side_effect=OSError("artifact failure")):
+            from destarter_lib import apply as module
+            original_write = module._write_artifact_atomic
+            calls = []
+
+            def fail_second_artifact(*args):
+                calls.append(args[1])
+                if len(calls) == 2:
+                    raise OSError("artifact failure")
+                return original_write(*args)
+
+            with patch("destarter_lib.apply._write_artifact_atomic", side_effect=fail_second_artifact):
                 with self.assertRaisesRegex(ApplyError, "rolled back"):
                     apply_preview(root, base / "run", manifest.approval_token)
             self.assertEqual((root / "messages/en.json").read_bytes(), original)
@@ -187,24 +220,58 @@ class PreviewApplyTests(unittest.TestCase):
             self.assertFalse((base / "run" / "reverse.diff").exists())
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
-    def test_apply_preserves_raced_destination_and_parent_symlink_outside_root(self) -> None:
+    def test_apply_preserves_late_rename_destination_at_final_transaction_entry(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = copy_fixture("nextjs-starter", base)
             manifest = self._rename_preview(root, base / "run")
             from destarter_lib import apply as module
-            original_backup = module._backup
+            original_transaction = module._fd_transaction
 
-            def create_destination(*args):
-                result = original_backup(*args)
+            def create_destination(transaction):
                 (root / "app" / "showcase").write_text("user destination", encoding="utf-8")
-                return result
+                return original_transaction(transaction)
 
-            with patch("destarter_lib.apply._backup", side_effect=create_destination):
-                with self.assertRaisesRegex(ApplyError, "source changed"):
+            with patch("destarter_lib.apply._fd_transaction", side_effect=create_destination):
+                with self.assertRaisesRegex(ApplyError, "destination"):
                     apply_preview(root, base / "run", manifest.approval_token)
             self.assertEqual((root / "app" / "showcase").read_text(encoding="utf-8"), "user destination")
+            self.assertTrue((root / "app" / "demo" / "page.tsx").exists())
+            self.assertFalse((base / "run" / "backup").exists())
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_apply_parent_symlink_swaps_never_touch_outside_data(self) -> None:
+        for kind in ("file", "directory"):
+            with self.subTest(kind=kind), TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                root = copy_fixture("nextjs-starter", base)
+                outside = base / "outside"
+                outside.mkdir()
+                guard = outside / "guard.txt"
+                guard.write_text("outside", encoding="utf-8")
+                if kind == "file":
+                    manifest = self._replacement_preview(root, base / "run")
+                    parent = root / "messages"
+                else:
+                    manifest = self._rename_preview(root, base / "run")
+                    parent = root / "app"
+                displaced = root / (parent.name + "-displaced")
+                from destarter_lib import apply as module
+                original_transaction = module._fd_transaction
+
+                def swap_parent(transaction):
+                    parent.rename(displaced)
+                    parent.symlink_to(outside, target_is_directory=True)
+                    return original_transaction(transaction)
+
+                with patch("destarter_lib.apply._fd_transaction", side_effect=swap_parent):
+                    with self.assertRaisesRegex(ApplyError, "ambient"):
+                        apply_preview(root, base / "run", manifest.approval_token)
+                self.assertEqual(guard.read_text(encoding="utf-8"), "outside")
+                self.assertFalse((base / "run" / "backup").exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_apply_reports_failed_rollback_when_ambient_parent_changes_after_mutation(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = copy_fixture("nextjs-starter", base)
@@ -212,21 +279,113 @@ class PreviewApplyTests(unittest.TestCase):
             outside.mkdir()
             guard = outside / "guard.txt"
             guard.write_text("outside", encoding="utf-8")
-            manifest = self._rename_preview(root, base / "run")
+            manifest = self._replacement_preview(root, base / "run")
             from destarter_lib import apply as module
-            original_backup = module._backup
+            original_verify = module._verify_success
+            changed = []
 
-            def swap_parent(*args):
-                result = original_backup(*args)
-                import shutil
-                shutil.rmtree(root / "app")
-                (root / "app").symlink_to(outside, target_is_directory=True)
-                return result
+            def swap_after_mutation(transaction):
+                if not changed:
+                    parent = root / "messages"
+                    parent.rename(root / "messages-displaced")
+                    parent.symlink_to(outside, target_is_directory=True)
+                    changed.append(True)
+                return original_verify(transaction)
 
-            with patch("destarter_lib.apply._backup", side_effect=swap_parent):
-                with self.assertRaisesRegex(ApplyError, "symlink"):
+            with patch("destarter_lib.apply._verify_success", side_effect=swap_after_mutation):
+                with self.assertRaisesRegex(ApplyError, "rollback failed"):
                     apply_preview(root, base / "run", manifest.approval_token)
             self.assertEqual(guard.read_text(encoding="utf-8"), "outside")
+            self.assertTrue((root / "messages-displaced" / "en.json").exists())
+            self.assertTrue((base / "run" / "backup").exists())
+
+    def test_apply_rejects_late_secret_at_final_transaction_entry(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._rename_preview(root, base / "run")
+            from destarter_lib import apply as module
+            original_transaction = module._fd_transaction
+
+            def add_secret(transaction):
+                (root / "app" / "demo" / ".env").write_text("TOKEN=late", encoding="utf-8")
+                return original_transaction(transaction)
+
+            with patch("destarter_lib.apply._fd_transaction", side_effect=add_secret):
+                with self.assertRaisesRegex(ApplyError, "excluded secret"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertTrue((root / "app" / "demo" / ".env").exists())
+            self.assertFalse((base / "run" / "backup").exists())
+
+    def test_apply_preserves_byte_identical_new_inode_output_and_backup_on_failed_rollback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            original = (root / "messages/en.json").read_bytes()
+            manifest = self._replacement_preview(root, base / "run")
+            from destarter_lib import apply as module
+            original_transaction = module._fd_transaction
+
+            def replace_output(transaction):
+                result = original_transaction(transaction)
+                target = root / "messages/en.json"
+                rendered = target.read_bytes()
+                replacement = target.with_name("replacement")
+                replacement.write_bytes(rendered)
+                os.chmod(replacement, target.stat().st_mode & 0o7777)
+                os.replace(str(replacement), str(target))
+                return result
+
+            with patch("destarter_lib.apply._fd_transaction", side_effect=replace_output):
+                with self.assertRaisesRegex(ApplyError, "rollback failed"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertNotEqual((root / "messages/en.json").read_bytes(), original)
+            self.assertTrue((base / "run" / "backup").exists())
+            self.assertFalse((base / "run" / "restore.json").exists())
+
+    def test_apply_fails_closed_for_unsupported_primitives_and_cross_filesystem(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            with patch("destarter_lib.apply._fd_support", side_effect=ApplyError("unavailable")):
+                with self.assertRaisesRegex(ApplyError, "unavailable"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertFalse((base / "run" / "backup").exists())
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            with patch("destarter_lib.apply._same_filesystem", return_value=False):
+                with self.assertRaisesRegex(ApplyError, "same filesystem"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertFalse((base / "run" / "backup").exists())
+
+    def test_apply_rejects_duplicate_manifest_json_as_apply_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            path = base / "run" / "manifest.json"
+            payload = path.read_text(encoding="utf-8")
+            path.write_text(payload.replace('"run_id":', '"run_id": "duplicate", "run_id":', 1), encoding="utf-8")
+            with self.assertRaisesRegex(ApplyError, "duplicate key"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+    def test_apply_closes_all_descriptors(self) -> None:
+        descriptor_root = Path("/dev/fd")
+        if not descriptor_root.is_dir():
+            self.skipTest("descriptor inventory unavailable")
+        before = len(list(descriptor_root.iterdir()))
+        for _index in range(3):
+            with TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                root = copy_fixture("nextjs-starter", base)
+                manifest = self._replacement_preview(root, base / "run")
+                apply_preview(root, base / "run", manifest.approval_token)
+        after = len(list(descriptor_root.iterdir()))
+        self.assertLessEqual(after, before + 1)
 
     def test_preview_changes_copy_but_not_source(self) -> None:
         with TemporaryDirectory() as tmp:
