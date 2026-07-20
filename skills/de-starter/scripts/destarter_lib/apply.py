@@ -1138,7 +1138,7 @@ def _write_artifact_atomic(
     temporary = ".destarter-artifact-{}".format(uuid.uuid4().hex)
     descriptor = os.open(
         temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
         0o600,
         dir_fd=transaction.run_fd,
     )
@@ -1149,9 +1149,8 @@ def _write_artifact_atomic(
         while view:
             written = os.write(descriptor, view)
             view = view[written:]
-    finally:
-        os.close(descriptor)
-    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        expected = _state_from_open(descriptor)
         os.link(
             temporary,
             name,
@@ -1159,11 +1158,17 @@ def _write_artifact_atomic(
             dst_dir_fd=transaction.run_fd,
             follow_symlinks=False,
         )
-        expected = _state_at(transaction.run_fd, name)
+        published = _state_at(transaction.run_fd, name)
+        if published != expected:
+            _fail(
+                "successful apply artifact was replaced before ownership "
+                "capture: {}".format(name)
+            )
         artifact = Artifact(name, expected)
         transaction.artifacts.append(artifact)
         return artifact
     finally:
+        os.close(descriptor)
         try:
             os.unlink(temporary, dir_fd=transaction.run_fd)
         except OSError:
@@ -1211,16 +1216,153 @@ def _remove_exact_to_trash(
     )
     moved = _state_at(transaction.original_fd, trash)
     if moved != expected:
-        if _absent(parent_fd, name):
-            os.rename(
-                trash,
-                name,
-                src_dir_fd=transaction.original_fd,
-                dst_dir_fd=parent_fd,
-            )
-        return "{} changed at rollback boundary; preserved".format(label)
+        return (
+            "{} changed at rollback boundary; preserved in external backup "
+            "as {}".format(label, trash)
+        )
     _remove_tree(transaction.original_fd, trash)
     return None
+
+
+def _restore_file_no_replace(
+    transaction: Transaction,
+    original: Original,
+    backup: ObjectState,
+) -> Optional[str]:
+    try:
+        os.link(
+            original.backup_name,
+            original.name,
+            src_dir_fd=transaction.original_fd,
+            dst_dir_fd=original.parent_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError:
+        return (
+            "original name {} was occupied during no-replace restore; "
+            "target and backup preserved".format(original.relpath)
+        )
+    except Exception as error:
+        return "original {} no-replace restore failed: {}".format(
+            original.relpath, error
+        )
+    try:
+        restored = _state_at(original.parent_fd, original.name)
+    except Exception as error:
+        return (
+            "original {} restore cannot be verified; target and backup "
+            "preserved: {}".format(original.relpath, error)
+        )
+    if restored != backup or restored != original.expected:
+        return (
+            "original {} changed during no-replace restore; target and "
+            "backup preserved".format(original.relpath)
+        )
+    try:
+        os.unlink(original.backup_name, dir_fd=transaction.original_fd)
+    except Exception as error:
+        return (
+            "original {} restored but verified backup link could not be "
+            "removed: {}".format(original.relpath, error)
+        )
+    return None
+
+
+def _restore_directory_no_replace(
+    transaction: Transaction,
+    original: Original,
+    backup: ObjectState,
+) -> Optional[str]:
+    source = os.open(
+        original.backup_name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=transaction.original_fd,
+    )
+    created_identity: Optional[Identity] = None
+    try:
+        mode = stat.S_IMODE(os.fstat(source).st_mode)
+        try:
+            destination, created_identity = _mkdir_exclusive(
+                original.parent_fd, original.name, mode
+            )
+        except FileExistsError:
+            return (
+                "original name {} was occupied during no-replace restore; "
+                "target and backup preserved".format(original.relpath)
+            )
+        try:
+            _copy_children(source, destination)
+        except FileExistsError:
+            return (
+                "directory restore for {} collided with raced content; "
+                "target and backup preserved".format(original.relpath)
+            )
+        except Exception as error:
+            try:
+                partial = _state_at(original.parent_fd, original.name)
+                if partial.identity != created_identity:
+                    return (
+                        "directory restore for {} failed and its partial "
+                        "target was replaced; target and backup preserved: "
+                        "{}".format(original.relpath, error)
+                    )
+                cleanup_error = _remove_exact_to_trash(
+                    transaction,
+                    original.parent_fd,
+                    original.name,
+                    partial,
+                    "partial directory restore {}".format(original.relpath),
+                )
+                if cleanup_error:
+                    return "{}; backup preserved: {}".format(
+                        cleanup_error, error
+                    )
+            except Exception as cleanup_failure:
+                return (
+                    "directory restore for {} failed; partial target and "
+                    "backup preserved: {}; cleanup verification failed: "
+                    "{}".format(original.relpath, error, cleanup_failure)
+                )
+            return (
+                "directory restore for {} failed; verified partial target "
+                "removed and backup preserved: {}".format(
+                    original.relpath, error
+                )
+            )
+        finally:
+            os.close(destination)
+        restored = _state_at(original.parent_fd, original.name)
+        if (
+            restored.identity != created_identity
+            or not _same_content_state(restored, original.expected)
+            or _state_at(transaction.original_fd, original.backup_name) != backup
+        ):
+            return (
+                "directory restore for {} changed before verification; "
+                "target and backup preserved".format(original.relpath)
+            )
+        try:
+            _remove_tree(transaction.original_fd, original.backup_name)
+        except Exception as error:
+            return (
+                "directory {} restored but backup removal failed: "
+                "{}".format(original.relpath, error)
+            )
+        return None
+    finally:
+        os.close(source)
+
+
+def _restore_original_no_replace(
+    transaction: Transaction,
+    original: Original,
+    backup: ObjectState,
+) -> Optional[str]:
+    if original.expected.kind == "file":
+        return _restore_file_no_replace(transaction, original, backup)
+    if original.expected.kind == "dir":
+        return _restore_directory_no_replace(transaction, original, backup)
+    return "original {} has unsupported backup type".format(original.relpath)
 
 
 def _rollback(transaction: Transaction) -> List[str]:
@@ -1271,33 +1413,11 @@ def _rollback(transaction: Transaction) -> List[str]:
                 "backup {} changed; preserved".format(original.relpath)
             )
             continue
-        if not _absent(original.parent_fd, original.name):
-            errors.append(
-                "original name {} is occupied; backup preserved".format(
-                    original.relpath
-                )
-            )
-            continue
-        try:
-            os.rename(
-                original.backup_name,
-                original.name,
-                src_dir_fd=transaction.original_fd,
-                dst_dir_fd=original.parent_fd,
-            )
-            restored = _state_at(original.parent_fd, original.name)
-            if restored != original.expected:
-                errors.append(
-                    "original {} was not restored exactly".format(
-                        original.relpath
-                    )
-                )
-        except Exception as error:
-            errors.append(
-                "original {} restore failed: {}".format(
-                    original.relpath, error
-                )
-            )
+        restore_error = _restore_original_no_replace(
+            transaction, original, backup
+        )
+        if restore_error:
+            errors.append(restore_error)
     try:
         if (
             _safe_root_digest(transaction.root_fd)
