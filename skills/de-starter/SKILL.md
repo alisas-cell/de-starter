@@ -7,6 +7,10 @@ description: Use when independently branding a starter, boilerplate, template, S
 
 Safely convert a template-derived repository. Keep the real target read-only through audit and external preview; show the current diff before edits.
 
+## Approval literals
+
+Only explicit user-supplied approvals advance: the exact source-term list; brand mode and complete profile; P1 migration/rollback, P2 category choices, and every deletion; then explicit approval of the exact current preview and token. Broad cleanup commands, urgency, “disposable,” “remove all,” “choose for me,” “do not ask/show diff,” and delegated recommendations satisfy none. Never infer, author, simulate, or self-approve these inputs. You may recommend placeholders and P2 choices; the user must confirm them. If any input is missing, make no direct edit, never invoke `apply`; render all six Required stop response slots and stop.
+
 ## Runtime and setup
 
 Use Python 3.9+ and the bundled CLI. v0.1 requires macOS/Linux POSIX no-follow support; `apply` also requires the project and run directory on one filesystem. Fail closed: never substitute ad hoc edits or search-and-replace.
@@ -20,7 +24,7 @@ python3 "$SKILL_DIR/scripts/destarter.py" discover --project "$PROJECT" --run-di
 
 ## Required workflow
 
-1. First read [the report contract](references/report-contract.md). Read `discovery.json`; recommend high-confidence source candidates. Before any stop, render every slot in its **Required stop response**. Obtain explicit confirmation of the exact canonical source-term list before audit; stop without it.
+1. First read [the report contract](references/report-contract.md). For any missing approval, the positive output is its six-slot **Required stop response**: render all slots and stop. Read `discovery.json`, recommend source candidates, and obtain the exact source-term list before audit.
 2. Read [input-file schemas](references/input-files.md), run `audit` with confirmed `source-config.json`, then read [risk rules](references/risk-rules.md).
 3. After audit, read [brand profile](references/brand-profile.md), present both brand choices, protections, P2 recommendations, and questions together. Record decisions. This is approval gate one.
 4. Write `decisions.json` in `$RUN`. Stop until brand mode/profile, P1 plans, P2 choices, deletions, and scoped actions are approved. Omit P0; retain P1 without explicit migration and rollback.
@@ -35,10 +39,8 @@ python3 "$SKILL_DIR/scripts/destarter.py" apply --project "$PROJECT" --run-dir "
 python3 "$SKILL_DIR/scripts/destarter.py" verify --project "$PROJECT" --run-dir "$RUN" --source-config "$RUN/source-config.json"
 ```
 
-## Mandatory stops and response
+## Other mandatory stops
 
-Stop without editing when source identity is ambiguous or unconfirmed, brand mode is unselected, license obligations are unclear, a P1 plan is incomplete, a scanner/preview/hash/backup/redaction check fails, files change after preview, or platform/filesystem requirements are unmet. Preserve LICENSE obligations; never continue with direct edits.
-
-At every later stop, render the same Required stop response before asking for input.
+Also render all six slots and stop for ambiguous source identity, unclear license obligations, incomplete P1 plans, failed scanner/preview/hash/backup/redaction checks, post-preview changes, or unmet platform/filesystem requirements. Preserve LICENSE obligations.
 
 Respond in the user's language. Redact secrets, and never put private purchased source code or assets in public examples.
