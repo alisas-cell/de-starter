@@ -7,7 +7,7 @@ Present artifacts and decisions in this order:
 3. Findings grouped as P0, P1, P2, and P3.
 4. Chosen P2 actions for demo routes, sample content, testimonials, test data, and assets; call out every confirmed deletion.
 5. Protected, retained, ambiguous, and unresolved items, including license obligations and P1 migration/rollback plans.
-6. Before approval: `audit.md`, `preview.diff`, `binary-changes.json`, `placeholders.json`, and the exact current approval token.
+6. Before approval: `audit.md`, `preview.md`, `preview.diff`, `binary-changes.json`, `placeholders.json`, and the exact current approval token.
 7. Validation commands and restore strategy before apply.
 8. After apply: actual changes, command results, verification findings, backup location, `reverse.diff`, `restore.json`, and `apply-result.json`.
 
