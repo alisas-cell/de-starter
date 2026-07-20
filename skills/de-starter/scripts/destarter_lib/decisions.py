@@ -69,7 +69,10 @@ def _project_path(value: object, label: str) -> str:
     if "\\" in value or value.startswith("/") or (len(value) >= 2 and value[1] == ":"):
         raise DecisionError("{} must stay inside the project".format(label))
     parts = [part for part in value.split("/") if part]
-    if not parts or any(part in {".", ".."} for part in parts):
+    if not parts or any(
+        part in {".", ".."} or part.endswith(".") or part[-1].isspace()
+        for part in parts
+    ):
         raise DecisionError("{} must stay inside the project".format(label))
     return "/".join(parts)
 

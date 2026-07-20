@@ -234,6 +234,22 @@ class DecisionTests(unittest.TestCase):
                         "rename_paths": {"app/demo": destination},
                     }), self.audit)
 
+    def test_rejects_windows_normalized_trailing_dot_or_whitespace_paths(self) -> None:
+        for unsafe_path in [".git.", ".git ", "node_modules.", "app/demo. "]:
+            with self.subTest(destination=unsafe_path):
+                with self.assertRaisesRegex(DecisionError, "stay inside the project"):
+                    load_decisions(self.write({
+                        "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                        "rename_paths": {"app/demo": unsafe_path},
+                    }), self.audit)
+        for unsafe_path in ["app/demo.", "app/demo "]:
+            with self.subTest(delete=unsafe_path):
+                with self.assertRaisesRegex(DecisionError, "stay inside the project"):
+                    load_decisions(self.write({
+                        "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                        "delete_paths": [unsafe_path],
+                    }), self.audit)
+
 
 if __name__ == "__main__":
     unittest.main()
