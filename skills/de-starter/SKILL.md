@@ -20,10 +20,10 @@ python3 "$SKILL_DIR/scripts/destarter.py" discover --project "$PROJECT" --run-di
 
 ## Required workflow
 
-1. Read `discovery.json`. Recommend high-confidence source-identity candidates; ask only when candidates are ambiguous. The user approves the exact canonical source-term list at approval gate one, which may be combined with the risk/P2 questions.
-2. Present both brand choices: pause for a complete real profile, or choose the exact neutral placeholders for later replacement. Read [brand profile](references/brand-profile.md). Never invent a real identity.
-3. Read [input-file schemas](references/input-files.md), then run `audit` with the approved `source-config.json`. Read [risk rules](references/risk-rules.md). Present protections and sensible P2 category recommendations, combine ordinary questions, and record every user decision. This is approval gate one.
-4. Write `decisions.json` in `$RUN`. Stop until the exact source terms, brand mode, P1 plans, P2 category choices, and every deletion are approved. P0 never enters actions; P1 stays retained unless its action has explicit migration and rollback text.
+1. Read `discovery.json`. Recommend high-confidence source-identity candidates; ask only when candidates are ambiguous. Before audit, obtain the user's explicit confirmation of the exact canonical source-term list; stop without it.
+2. Read [input-file schemas](references/input-files.md), then run `audit` with the confirmed `source-config.json`. Read [risk rules](references/risk-rules.md).
+3. After audit, present both brand choices: a complete real profile or exact neutral placeholders for later replacement. Read [brand profile](references/brand-profile.md). Present protections and sensible P2 category recommendations, combine ordinary questions, and record every decision. This is approval gate one.
+4. Write `decisions.json` in `$RUN`. Stop until the brand mode/profile, P1 plans, P2 category choices, every deletion, and other scoped actions are approved. P0 never enters actions; P1 stays retained unless its action has explicit migration and rollback text.
 5. Run `preview`. Show `audit.md`, `preview.md`, `preview.diff`, `binary-changes.json`, `placeholders.json`, protected/retained items, validation commands, unresolved work, and the exact current approval token. Stop: this is approval gate two.
 6. Apply only after explicit approval of that exact preview and token. The CLI checks current hashes and rejects stale artifacts. Run detected validation commands, then `verify` with the same source config.
 7. Report results using [the report contract](references/report-contract.md). Exit code 3 from `verify` means findings remain: report them; never hide or reinterpret it as success.

@@ -27,4 +27,4 @@ Only these top-level keys are allowed: `brand_mode`, `brand_profile`, `actions`,
 }
 ```
 
-An action is `keep` or `replace`; `replace` needs `replacement`. P1 replacements also need nonempty `migration_plan` and `rollback_plan`. P0 can only be kept. `delete_paths` removes only an audited P2 scope after explicit confirmation. `rename_paths` maps audited P2 or path-finding source paths to distinct, project-relative destinations; it cannot overlap deletes or other rename paths.
+An action is `keep` or `replace`; `replace` needs `replacement`. P1 replacements also need nonempty `migration_plan` and `rollback_plan`. Under this Skill, omit P0 findings from `actions` entirely: the runtime accepts `keep`, but the product contract deliberately keeps P0 out of actions. `delete_paths` removes only an audited P2 scope after explicit confirmation. `rename_paths` maps audited P2 or path-finding source paths to distinct, project-relative destinations; it cannot overlap deletes or other rename paths.
