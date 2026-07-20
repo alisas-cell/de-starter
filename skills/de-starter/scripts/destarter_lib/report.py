@@ -1,23 +1,21 @@
 import json
-import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict
 
 from .models import AuditResult
+from .scanner import SECRET_ASSIGNMENT_RE
 
 
-SECRET_VALUE_RE = re.compile(
-    r"(?ix)((?:api[_-]?key|secret|token|password)[A-Z0-9_ -]*[\"']?\s*"
-    r"(?:=\s*|:\s*(?:[A-Z_$][A-Z0-9_$<>\[\]| ,.?]*\s*=\s*)?))"
-    r"(?:[\"'][^\"']+[\"']|[^\s,;]+)"
-)
 RISK_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
 def redact_evidence(value: str) -> str:
-    """Remove assignment values from evidence before it leaves the scanner."""
-    return SECRET_VALUE_RE.sub(r"\1[REDACTED]", value)
+    """Replace the complete detected secret assignment before reporting it."""
+    return SECRET_ASSIGNMENT_RE.sub(
+        lambda match: "{} = [REDACTED]".format(match.group("name")),
+        value,
+    )
 
 
 def _ordered_findings(audit: AuditResult):

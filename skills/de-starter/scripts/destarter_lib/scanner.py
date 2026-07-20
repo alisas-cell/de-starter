@@ -16,9 +16,9 @@ P1_PATTERNS = (
     re.compile(r"/api/[A-Za-z0-9_./:-]+"),
 )
 SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?ix)\b([A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*)[\"']?"
+    r"(?ix)\b(?P<name>[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*)[\"']?"
     r"\s*(?:=\s*|:\s*(?:[A-Z_$][A-Z0-9_$<>\[\]| ,.?]*\s*=\s*)?)"
-    r"[\"']([^\"']{8,})[\"']"
+    r"(?P<quote>[\"'])(?P<value>(?:\\.|(?! (?P=quote) ).){8,})(?P=quote)"
 )
 P2_PARTS = {
     "demo", "demos", "example", "examples", "sample", "samples", "testimonials",
@@ -112,18 +112,21 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
 
         for line_number, line_text in enumerate(text.splitlines(), start=1):
             for secret_match in SECRET_ASSIGNMENT_RE.finditer(line_text):
-                if "example" in secret_match.group(2).lower():
+                if "example" in secret_match.group("value").lower():
                     continue
-                raw_id = "{}:{}:secret:{}".format(
-                    record.relpath, line_number, secret_match.group(1)
+                raw_id = "{}:{}:secret:{}:{}".format(
+                    record.relpath,
+                    line_number,
+                    secret_match.start("name"),
+                    secret_match.group("name"),
                 )
                 findings.append(
                     Finding(
                         finding_id=_finding_id(raw_id),
                         relpath=record.relpath,
                         line=line_number,
-                        column=secret_match.start(1) + 1,
-                        matched=secret_match.group(1),
+                        column=secret_match.start("name") + 1,
+                        matched=secret_match.group("name"),
                         category="possible-secret",
                         risk=RiskLevel.P0,
                         evidence=line_text.strip()[:240],
