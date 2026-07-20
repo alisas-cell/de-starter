@@ -1229,43 +1229,88 @@ def _restore_file_no_replace(
     original: Original,
     backup: ObjectState,
 ) -> Optional[str]:
+    source = os.open(
+        original.backup_name,
+        os.O_RDONLY | os.O_NOFOLLOW,
+        dir_fd=transaction.original_fd,
+    )
+    created_identity: Optional[Identity] = None
     try:
-        os.link(
-            original.backup_name,
-            original.name,
-            src_dir_fd=transaction.original_fd,
-            dst_dir_fd=original.parent_fd,
-            follow_symlinks=False,
-        )
-    except FileExistsError:
-        return (
-            "original name {} was occupied during no-replace restore; "
-            "target and backup preserved".format(original.relpath)
-        )
+        source_info = os.fstat(source)
+        mode = stat.S_IMODE(source_info.st_mode)
+        try:
+            destination = os.open(
+                original.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                mode,
+                dir_fd=original.parent_fd,
+            )
+        except FileExistsError:
+            return (
+                "original name {} was occupied during no-replace restore; "
+                "target and backup preserved".format(original.relpath)
+            )
+        try:
+            os.fchmod(destination, mode)
+            created_identity = _identity_from_stat(os.fstat(destination))
+            while True:
+                chunk = os.read(source, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(destination, view)
+                    view = view[written:]
+        except Exception as error:
+            try:
+                partial = _state_at(original.parent_fd, original.name)
+                if partial.identity != created_identity:
+                    return (
+                        "file restore for {} failed and its partial target "
+                        "was replaced; target and backup preserved: "
+                        "{}".format(original.relpath, error)
+                    )
+                cleanup_error = _remove_exact_to_trash(
+                    transaction,
+                    original.parent_fd,
+                    original.name,
+                    partial,
+                    "partial file restore {}".format(original.relpath),
+                )
+                if cleanup_error:
+                    return "{}; backup preserved: {}".format(
+                        cleanup_error, error
+                    )
+            except Exception as cleanup_failure:
+                return (
+                    "file restore for {} failed; partial target and backup "
+                    "preserved: {}; cleanup verification failed: "
+                    "{}".format(original.relpath, error, cleanup_failure)
+                )
+            return (
+                "file restore for {} failed; verified partial target removed "
+                "and backup preserved: {}".format(original.relpath, error)
+            )
+        finally:
+            os.close(destination)
+        restored = _state_at(original.parent_fd, original.name)
+        if (
+            restored.identity != created_identity
+            or restored.identity == backup.identity
+            or not _same_content_state(restored, original.expected)
+            or _state_at(transaction.original_fd, original.backup_name) != backup
+        ):
+            return (
+                "original {} changed during no-replace copied restore; "
+                "target and backup preserved".format(original.relpath)
+            )
+        return None
     except Exception as error:
-        return "original {} no-replace restore failed: {}".format(
+        return "original {} no-replace copied restore failed: {}".format(
             original.relpath, error
         )
-    try:
-        restored = _state_at(original.parent_fd, original.name)
-    except Exception as error:
-        return (
-            "original {} restore cannot be verified; target and backup "
-            "preserved: {}".format(original.relpath, error)
-        )
-    if restored != backup or restored != original.expected:
-        return (
-            "original {} changed during no-replace restore; target and "
-            "backup preserved".format(original.relpath)
-        )
-    try:
-        os.unlink(original.backup_name, dir_fd=transaction.original_fd)
-    except Exception as error:
-        return (
-            "original {} restored but verified backup link could not be "
-            "removed: {}".format(original.relpath, error)
-        )
-    return None
+    finally:
+        os.close(source)
 
 
 def _restore_directory_no_replace(
@@ -1340,13 +1385,6 @@ def _restore_directory_no_replace(
             return (
                 "directory restore for {} changed before verification; "
                 "target and backup preserved".format(original.relpath)
-            )
-        try:
-            _remove_tree(transaction.original_fd, original.backup_name)
-        except Exception as error:
-            return (
-                "directory {} restored but backup removal failed: "
-                "{}".format(original.relpath, error)
             )
         return None
     finally:
@@ -1597,14 +1635,9 @@ def apply_preview(
                     "apply failed and rollback failed: {}; original error: "
                     "{}".format("; ".join(rollback_errors), error)
                 ) from error
-            if not _cleanup_empty_backup(transaction):
-                raise ApplyError(
-                    "apply failed and rollback failed: restored originals but "
-                    "could not remove empty backup; original error: "
-                    "{}".format(error)
-                ) from error
             raise ApplyError(
-                "apply failed; changes rolled back: {}".format(error)
+                "apply failed; changes rolled back; external backup retained: "
+                "{}".format(error)
             ) from error
     finally:
         transaction.close()

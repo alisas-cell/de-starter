@@ -128,9 +128,16 @@ class PreviewApplyTests(unittest.TestCase):
             original = (root / "messages/en.json").read_bytes()
             manifest = self._replacement_preview(root, base / "run")
             with patch("destarter_lib.apply._create_outputs", side_effect=OSError("injected failure")):
-                with self.assertRaisesRegex(ApplyError, "rolled back"):
+                with self.assertRaisesRegex(ApplyError, "rolled back.*backup retained"):
                     apply_preview(root, base / "run", manifest.approval_token)
             self.assertEqual((root / "messages/en.json").read_bytes(), original)
+            retained = list((base / "run" / "backup" / "original").iterdir())
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_bytes(), original)
+            self.assertNotEqual(
+                retained[0].stat().st_ino,
+                (root / "messages/en.json").stat().st_ino,
+            )
 
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -145,7 +152,69 @@ class PreviewApplyTests(unittest.TestCase):
                 original,
             )
             self.assertFalse((root / "app" / "showcase").exists())
-            self.assertFalse((base / "run" / "backup").exists())
+            retained = list((base / "run" / "backup" / "original").iterdir())
+            self.assertEqual(len(retained), 1)
+            self.assertEqual((retained[0] / "page.tsx").read_bytes(), original)
+            self.assertNotEqual(
+                retained[0].stat().st_ino,
+                (root / "app" / "demo").stat().st_ino,
+            )
+
+    def test_apply_preserves_backup_when_restored_file_is_replaced_after_verification(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            original = (root / "messages/en.json").read_bytes()
+            manifest = self._replacement_preview(root, base / "run")
+            from destarter_lib import apply as module
+            original_restore = module._restore_file_no_replace
+            original_state_at = module._state_at
+            restoring = []
+            replaced = []
+
+            def mark_restore(*args):
+                restoring.append(True)
+                try:
+                    return original_restore(*args)
+                finally:
+                    restoring.pop()
+
+            def replace_after_verification(parent_fd, name):
+                state = original_state_at(parent_fd, name)
+                if restoring and name == "en.json" and not replaced:
+                    os.unlink(name, dir_fd=parent_fd)
+                    descriptor = os.open(
+                        name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=parent_fd,
+                    )
+                    try:
+                        os.write(descriptor, b"late replacement after verify")
+                    finally:
+                        os.close(descriptor)
+                    replaced.append(True)
+                return state
+
+            with patch(
+                "destarter_lib.apply._create_outputs",
+                side_effect=OSError("force rollback"),
+            ), patch(
+                "destarter_lib.apply._restore_file_no_replace",
+                side_effect=mark_restore,
+            ), patch(
+                "destarter_lib.apply._state_at",
+                side_effect=replace_after_verification,
+            ):
+                with self.assertRaisesRegex(ApplyError, "rollback failed"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertEqual(
+                (root / "messages/en.json").read_bytes(),
+                b"late replacement after verify",
+            )
+            retained = list((base / "run" / "backup" / "original").iterdir())
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_bytes(), original)
 
     def test_apply_never_overwrites_a_late_restore_target(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -153,30 +222,27 @@ class PreviewApplyTests(unittest.TestCase):
             root = copy_fixture("nextjs-starter", base)
             manifest = self._replacement_preview(root, base / "run")
             from destarter_lib import apply as module
-            real_rename = os.rename
-            real_link = os.link
+            real_open = os.open
             raced = []
 
-            def inject_restore_target(function, *args, **kwargs):
-                source, destination = args[:2]
+            def inject_restore_target(path, flags, *args, **kwargs):
                 if (
                     not raced
-                    and destination == "en.json"
-                    and isinstance(source, str)
-                    and source.startswith("0000-")
+                    and path == "en.json"
+                    and flags & os.O_EXCL
                 ):
-                    descriptor = os.open(
-                        destination,
+                    descriptor = real_open(
+                        path,
                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                         0o600,
-                        dir_fd=kwargs["dst_dir_fd"],
+                        dir_fd=kwargs["dir_fd"],
                     )
                     try:
                         os.write(descriptor, b"late user restore target")
                     finally:
                         os.close(descriptor)
                     raced.append(True)
-                return function(*args, **kwargs)
+                return real_open(path, flags, *args, **kwargs)
 
             with patch(
                 "destarter_lib.apply._fd_support",
@@ -185,15 +251,8 @@ class PreviewApplyTests(unittest.TestCase):
                 "destarter_lib.apply._create_outputs",
                 side_effect=OSError("force rollback"),
             ), patch(
-                "destarter_lib.apply.os.rename",
-                side_effect=lambda *args, **kwargs: inject_restore_target(
-                    real_rename, *args, **kwargs
-                ),
-            ), patch(
-                "destarter_lib.apply.os.link",
-                side_effect=lambda *args, **kwargs: inject_restore_target(
-                    real_link, *args, **kwargs
-                ),
+                "destarter_lib.apply.os.open",
+                side_effect=inject_restore_target,
             ):
                 with self.assertRaisesRegex(ApplyError, "rollback failed"):
                     apply_preview(root, base / "run", manifest.approval_token)
