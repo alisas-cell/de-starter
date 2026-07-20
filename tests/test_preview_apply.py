@@ -123,7 +123,7 @@ class PreviewApplyTests(unittest.TestCase):
             root = copy_fixture("nextjs-starter", base)
             original = (root / "messages/en.json").read_bytes()
             manifest = self._replacement_preview(root, base / "run")
-            with patch("destarter_lib.apply._write_file_atomic", side_effect=OSError("injected failure")):
+            with patch("destarter_lib.apply._fd_copy_file", side_effect=OSError("injected failure")):
                 with self.assertRaisesRegex(ApplyError, "rolled back"):
                     apply_preview(root, base / "run", manifest.approval_token)
             self.assertEqual((root / "messages/en.json").read_bytes(), original)

@@ -4,7 +4,9 @@ import difflib
 import json
 import os
 import shutil
+import stat
 import tempfile
+import uuid
 from hashlib import sha256
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Tuple
@@ -380,6 +382,161 @@ def _reverse_diff(root: Path, preview: Path, manifest: PreviewManifest) -> str:
     return redact_evidence("".join(lines))
 
 
+def _fd_support() -> None:
+    required = ("open", "rename", "replace", "unlink", "rmdir", "mkdir")
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or any(name not in os.supports_dir_fd for name in (os.rename, os.unlink, os.rmdir, os.mkdir)):
+        _fail("safe descriptor-relative filesystem primitives are unavailable")
+
+
+def _open_root(root: Path) -> int:
+    _fd_support()
+    return os.open(str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def _open_parent(root_fd: int, relpath: str) -> Tuple[int, str]:
+    parts = _safe_relpath(relpath).parts
+    fd = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd, parts[-1]
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _identity(fd: int, name: str) -> Tuple[int, int]:
+    item = os.stat(name, dir_fd=fd, follow_symlinks=False)
+    if stat.S_ISLNK(item.st_mode):
+        _fail("symlink appeared at mutation boundary")
+    return item.st_dev, item.st_ino
+
+
+def _fd_copy_file(source: Path, parent_fd: int, name: str, mode: int, replace: bool = False) -> Tuple[int, int]:
+    temporary = ".destarter-{}".format(uuid.uuid4().hex)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(temporary, flags, mode, dir_fd=parent_fd)
+    try:
+        with os.fdopen(fd, "wb") as output, source.open("rb") as input_handle:
+            shutil.copyfileobj(input_handle, output)
+        if replace:
+            os.replace(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        else:
+            os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        return _identity(parent_fd, name)
+    except Exception:
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except OSError:
+            pass
+        raise
+
+
+def _fd_remove_tree(parent_fd: int, name: str) -> None:
+    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if stat.S_ISDIR(info.st_mode):
+        child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            for entry in os.listdir(child):
+                _fd_remove_tree(child, entry)
+        finally:
+            os.close(child)
+        os.rmdir(name, dir_fd=parent_fd)
+    else:
+        os.unlink(name, dir_fd=parent_fd)
+
+
+def _fd_copy_tree(source: Path, parent_fd: int, name: str) -> Tuple[int, int]:
+    info = source.lstat()
+    if source.is_symlink():
+        _fail("preview symlink appeared at mutation boundary")
+    if source.is_file():
+        return _fd_copy_file(source, parent_fd, name, stat.S_IMODE(info.st_mode))
+    os.mkdir(name, stat.S_IMODE(info.st_mode), dir_fd=parent_fd)
+    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        for item in sorted(source.iterdir(), key=lambda path: path.name):
+            _fd_copy_tree(item, child, item.name)
+    except Exception:
+        _fd_remove_tree(parent_fd, name)
+        raise
+    finally:
+        os.close(child)
+    return _identity(parent_fd, name)
+
+
+def _fd_quarantine(root_fd: int, relpath: str) -> Tuple[int, str, str, Tuple[int, int]]:
+    parent_fd, name = _open_parent(root_fd, relpath)
+    identity = _identity(parent_fd, name)
+    quarantine = ".destarter-quarantine-{}".format(uuid.uuid4().hex)
+    os.rename(name, quarantine, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    return parent_fd, name, quarantine, identity
+
+
+def _fd_restore_quarantine(record: Tuple[int, str, str, Tuple[int, int]]) -> None:
+    parent_fd, name, quarantine, _identity_before = record
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        raise ApplyError("rollback cannot restore over raced original path")
+    except FileNotFoundError:
+        os.rename(quarantine, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+
+
+def _fd_apply(root: Path, preview: Path, manifest: PreviewManifest) -> List[Tuple[int, str, Tuple[int, int]]]:
+    """Mutate only through pinned no-follow directory descriptors."""
+    root_fd = _open_root(root)
+    quarantines = []
+    created = []
+    try:
+        for relpath in list(manifest.deleted_paths) + list(manifest.renamed_paths):
+            quarantines.append(_fd_quarantine(root_fd, relpath))
+        for source, destination in manifest.renamed_paths.items():
+            parent_fd, name = _open_parent(root_fd, destination)
+            try:
+                try:
+                    os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                    _fail("rename destination appeared after preflight: {}".format(destination))
+                except FileNotFoundError:
+                    pass
+                created.append((parent_fd, name, _fd_copy_tree(preview / _safe_relpath(destination), parent_fd, name)))
+            except Exception:
+                os.close(parent_fd)
+                raise
+        for relpath in manifest.changed_paths:
+            if _inside_renamed_preview(manifest, relpath):
+                continue
+            parent_fd, name = _open_parent(root_fd, relpath)
+            try:
+                old = _identity(parent_fd, name)
+                created.append((parent_fd, name, _fd_copy_file(preview / _safe_relpath(relpath), parent_fd, name,
+                                                               stat.S_IMODE(os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode), replace=True)))
+            except Exception:
+                os.close(parent_fd)
+                raise
+        for record in quarantines:
+            _fd_remove_tree(record[0], record[2])
+        return created
+    except Exception:
+        for parent_fd, name, identity in reversed(created):
+            try:
+                if _identity(parent_fd, name) == identity:
+                    _fd_remove_tree(parent_fd, name)
+            except Exception:
+                pass
+            os.close(parent_fd)
+        for record in reversed(quarantines):
+            try:
+                _fd_restore_quarantine(record)
+            except Exception:
+                pass
+            os.close(record[0])
+        raise
+    finally:
+        os.close(root_fd)
+
+
 def apply_preview(project_root: Path, run_dir: Path, approval_token: str) -> ApplyResult:
     """Apply precisely the token-bound preview, restoring all originals on failure."""
     root, run = project_root.resolve(), run_dir.resolve()
@@ -412,15 +569,7 @@ def apply_preview(project_root: Path, run_dir: Path, approval_token: str) -> App
             if _contains_secret_or_ignored(root, relpath):
                 _fail("operation root contains excluded secret file or ignored metadata: {}".format(relpath))
         reverse = _reverse_diff(root, preview, manifest)
-        for source, destination in manifest.renamed_paths.items():
-            _materialize_tree(preview / _safe_relpath(destination), root / _safe_relpath(destination))
-            _remove(root / _safe_relpath(source))
-        for relpath in manifest.changed_paths:
-            if _inside_renamed_preview(manifest, relpath):
-                continue
-            _write_file_atomic(preview / _safe_relpath(relpath), root / _safe_relpath(relpath))
-        for relpath in manifest.deleted_paths:
-            _remove(root / _safe_relpath(relpath))
+        _fd_apply(root, preview, manifest)
         for relpath, expected in manifest.preview_hashes.items():
             target = root / _safe_relpath(relpath)
             if not target.is_file() or sha256_file(target) != expected:
