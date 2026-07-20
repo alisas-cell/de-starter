@@ -156,6 +156,73 @@ class PreviewApplyTests(unittest.TestCase):
             self.assertNotIn("Your Product", (base / "run" / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest.approval_token, payload["approval_token"])
 
+    def test_preview_redacts_secret_on_same_diff_line_without_changing_preview(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            target = root / "messages/en.json"
+            secret = "live-token-12345678"
+            target.write_text('{"brand":"Northstar", "API_TOKEN":"%s"}\n' % secret, encoding="utf-8")
+            audit = scan_project(root, ["Northstar"])
+            finding = next(item for item in audit.findings if item.relpath == "messages/en.json" and item.matched == "Northstar")
+            decisions_path = base / "decisions.json"
+            decisions_path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [{
+                "finding_id": finding.finding_id, "action": "replace", "replacement": "Your Product",
+                "migration_plan": "display only", "rollback_plan": "restore display",
+            }]}), encoding="utf-8")
+            manifest = create_preview(root, base / "run", audit, load_decisions(decisions_path, audit))
+            self.assertIn(secret, (Path(manifest.preview_root) / "messages/en.json").read_text(encoding="utf-8"))
+            for name in ("preview.diff", "preview.md", "binary-changes.json", "placeholders.json", "manifest.json"):
+                self.assertNotIn(secret, (base / "run" / name).read_text(encoding="utf-8"))
+
+    def test_preview_rejects_stale_full_inventory_before_copy(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            audit = scan_project(root, ["Northstar"])
+            (root / "new-safe-file.txt").write_text("new", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "stale audit"):
+                create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
+            self.assertFalse((base / "run" / "preview").exists())
+
+    def test_preview_rejects_secret_and_ignored_directories_in_operation_roots(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "app" / "demo" / ".env").mkdir()
+            (root / "app" / "demo" / ".env" / "credentials").write_text("hidden", encoding="utf-8")
+            audit = scan_project(root, ["Northstar"])
+            decisions_path = base / "decisions.json"
+            decisions_path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [], "delete_paths": ["app/demo"]}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "secret file"):
+                create_preview(root, base / "run", audit, load_decisions(decisions_path, audit))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_preview_ignores_symlinks_inside_node_modules(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "pnpm-link").symlink_to(base / "elsewhere")
+            audit = scan_project(root, ["Northstar"])
+            create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
+
+    def test_preview_token_is_deterministic_and_binds_explicit_keep(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            audit = scan_project(root, ["Northstar"])
+            first = create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
+            second = create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
+            finding = next(item for item in audit.findings if item.risk.value == "P3")
+            keep_path = base / "keep.json"
+            keep_path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [{
+                "finding_id": finding.finding_id, "action": "keep",
+            }]}), encoding="utf-8")
+            kept = create_preview(root, base / "keep-run", audit, load_decisions(keep_path, audit))
+            self.assertEqual(first.approval_token, second.approval_token)
+            self.assertNotEqual(first.approval_token, kept.approval_token)
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_preview_refuses_symlink_that_escapes_project(self) -> None:
         with TemporaryDirectory() as tmp:

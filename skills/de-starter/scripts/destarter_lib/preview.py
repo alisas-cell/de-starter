@@ -10,13 +10,25 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Tuple
 
-from .files import IGNORED_DIRS, is_secret_name, iter_project_files, read_text, sha256_file
+from .files import IGNORED_DIRS, is_secret_name, read_text, sha256_file
 from .models import AuditResult, DecisionSet, PreviewManifest
+from .report import redact_evidence
 
 
 _OWNER_FILE = ".destarter-preview-owner.json"
 _PROTECTED_STEMS = {"license", "copying", "notice"}
 _SECRET_VALUE_RE = re.compile(r"(?i)(secret|token|api[_-]?key|password|^sk_)")
+
+
+def _is_ignored_name(name: str) -> bool:
+    return name.casefold() in {item.casefold() for item in IGNORED_DIRS}
+
+
+def _is_secret_name(name: str) -> bool:
+    lowered = name.casefold()
+    return is_secret_name(name) or lowered == ".env" or (
+        lowered.startswith(".env.") and lowered not in {".env.example", ".env.sample", ".env.template"}
+    )
 
 
 def _contains(parent: Path, child: Path) -> bool:
@@ -28,7 +40,7 @@ def _contains(parent: Path, child: Path) -> bool:
 
 
 def _ignore(_directory: str, names: List[str]) -> List[str]:
-    return [name for name in names if name in IGNORED_DIRS or is_secret_name(name)]
+    return [name for name in names if _is_ignored_name(name) or _is_secret_name(name)]
 
 
 def _token(payload: Mapping[str, object]) -> str:
@@ -45,7 +57,7 @@ def _safe_relpath(value: str) -> Path:
     for part in path.parts:
         lowered = part.casefold()
         stem = lowered.split(".", 1)[0]
-        if lowered in IGNORED_DIRS or is_secret_name(part) or stem in _PROTECTED_STEMS:
+        if _is_ignored_name(part) or _is_secret_name(part) or stem in _PROTECTED_STEMS:
             raise ValueError("preview operation contains protected ignored metadata")
     return path
 
@@ -54,10 +66,37 @@ def _ensure_no_symlinks(root: Path) -> None:
     """Reject links rather than risk following an external or absolute target."""
     for directory, dirs, files in os.walk(str(root), followlinks=False):
         current = Path(directory)
+        dirs[:] = [name for name in dirs if not _is_ignored_name(name) and not _is_secret_name(name)]
+        files = [name for name in files if not _is_secret_name(name)]
         for name in dirs + files:
             candidate = current / name
             if candidate.is_symlink():
                 raise ValueError("project contains symlink; preview refuses symlink sources")
+
+
+def _safe_file_records(root: Path, excluded_names: Iterable[str] = ()) -> List[Dict[str, object]]:
+    """Inventory the same safe, non-secret tree that may enter a preview."""
+    records = []
+    excluded = set(excluded_names)
+    for directory, dirs, files in os.walk(str(root), followlinks=False):
+        current = Path(directory)
+        dirs[:] = [name for name in dirs if not _is_ignored_name(name) and not _is_secret_name(name)]
+        for name in sorted(files):
+            if name in excluded or _is_secret_name(name):
+                continue
+            path = current / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            relpath = path.relative_to(root).as_posix()
+            records.append({
+                "relpath": relpath, "size": path.stat().st_size,
+                "sha256": sha256_file(path), "is_text": read_text(path) is not None,
+            })
+    return sorted(records, key=lambda item: str(item["relpath"]))
+
+
+def _snapshot_hash(records: List[Dict[str, object]]) -> str:
+    return _token({"files": records})
 
 
 def _tree_files(root: Path, relpath: str) -> List[Tuple[str, Path]]:
@@ -67,9 +106,9 @@ def _tree_files(root: Path, relpath: str) -> List[Tuple[str, Path]]:
     if not target.is_dir():
         raise ValueError("preview operation path does not exist: {}".format(relpath))
     records = []
-    for record in iter_project_files(target):
-        child = target / record.relpath
-        records.append(((Path(relpath) / record.relpath).as_posix(), child))
+    for record in _safe_file_records(target):
+        child = target / str(record["relpath"])
+        records.append(((Path(relpath) / str(record["relpath"])).as_posix(), child))
     if not records:
         # Empty directories are still bound to a deterministic tree hash.
         return []
@@ -84,13 +123,13 @@ def _tree_hash(root: Path, relpath: str) -> str:
 def _contains_secret_or_ignored(root: Path, relpath: str) -> bool:
     target = root / _safe_relpath(relpath)
     if target.is_file():
-        return is_secret_name(target.name)
+        return _is_secret_name(target.name) or _is_ignored_name(target.name)
     if not target.is_dir():
         return False
     for directory, dirs, files in os.walk(str(target), followlinks=False):
-        if any(name in IGNORED_DIRS for name in dirs):
+        if any(_is_ignored_name(name) or _is_secret_name(name) for name in dirs):
             return True
-        if any(is_secret_name(name) for name in files):
+        if any(_is_secret_name(name) for name in files):
             return True
     return False
 
@@ -139,6 +178,7 @@ def _operation_records(root: Path, paths: Iterable[str], operation: str, renames
 
 def _redact_report_text(text: str, decisions: DecisionSet) -> str:
     """Keep normal review diffs useful while never echoing secret-like input values."""
+    text = redact_evidence(text)
     values = [action.replacement for action in decisions.actions if action.replacement]
     values.extend(decisions.brand_profile.values())
     for value in sorted(set(values), key=len, reverse=True):
@@ -163,6 +203,30 @@ def create_preview(
     if run.exists() and run.is_symlink():
         raise ValueError("run directory must not be a symlink")
     _ensure_no_symlinks(root)
+    deleted = sorted(set(decisions.delete_paths))
+    renames = dict(sorted(decisions.rename_paths.items()))
+    operation_roots = deleted + list(renames) + list(renames.values())
+    for relpath in operation_roots:
+        _safe_relpath(relpath)
+    for relpath in deleted + list(renames):
+        if _contains_secret_or_ignored(root, relpath):
+            raise ValueError("path contains excluded secret file or ignored metadata: {}".format(relpath))
+    source_records = _safe_file_records(root)
+    audited_records = [
+        {"relpath": item.relpath, "size": item.size, "sha256": item.sha256, "is_text": item.is_text}
+        for item in sorted(audit.files, key=lambda item: item.relpath)
+    ]
+    if source_records != audited_records:
+        raise ValueError("stale audit: safe source inventory changed")
+    source_tree_hash = _snapshot_hash(source_records)
+    for action in decisions.actions:
+        if action.action == "replace":
+            finding = next((item for item in audit.findings if item.finding_id == action.finding_id), None)
+            if finding and any(
+                finding.relpath == path or finding.relpath.startswith(path.rstrip("/") + "/")
+                for path in deleted
+            ):
+                raise ValueError("text replacement falls under deleted path")
 
     preview_root = run / "preview"
     _remove_owned_preview(preview_root, root)
@@ -204,15 +268,6 @@ def create_preview(
             lines[index] = lines[index][:start] + (action.replacement or "") + lines[index][end:]
         path.write_text("".join(lines), encoding="utf-8")
         changed.add(relpath)
-
-    deleted = sorted(set(decisions.delete_paths))
-    renames = dict(sorted(decisions.rename_paths.items()))
-    operation_roots = deleted + list(renames) + list(renames.values())
-    for relpath in operation_roots:
-        _safe_relpath(relpath)
-    for relpath in deleted + list(renames):
-        if _contains_secret_or_ignored(root, relpath):
-            raise ValueError("path contains excluded secret file or ignored metadata: {}".format(relpath))
 
     delete_tree_hashes = {relpath: _tree_hash(root, relpath) for relpath in deleted}
     rename_tree_hashes = {
@@ -268,6 +323,41 @@ def create_preview(
         _redact_report_text("".join(diff_lines), decisions), encoding="utf-8"
     )
 
+    binary_operations = _operation_records(root, deleted, "delete", renames)
+    binary_operations.extend(_operation_records(root, renames, "rename", renames))
+    for relpath in sorted(changed):
+        binary_operations.append({"operation": "replace", "path": relpath, "destination": _preview_relpath(relpath, renames), "is_text": True})
+    (run / "binary-changes.json").write_text(json.dumps({"operations": binary_operations}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    placeholders = []
+    if decisions.brand_mode == "placeholder":
+        seen = set()
+        for field, value in sorted(decisions.brand_profile.items()):
+            for record in _safe_file_records(preview_root):
+                text = read_text(preview_root / str(record["relpath"]))
+                if text is not None and value in text:
+                    item = {"identifier": field, "value": "<placeholder>", "path": record["relpath"]}
+                    key = (value, record["relpath"])
+                    if key not in seen:
+                        seen.add(key)
+                        placeholders.append(item)
+    (run / "placeholders.json").write_text(json.dumps(placeholders, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    preview_tree_hash = _snapshot_hash(_safe_file_records(preview_root, {_OWNER_FILE}))
+    decision_hash = _token({
+        "brand_mode": decisions.brand_mode,
+        "brand_profile": decisions.brand_profile,
+        "actions": sorted([
+            {"finding_id": action.finding_id, "action": action.action, "replacement": action.replacement,
+             "migration_plan": action.migration_plan, "rollback_plan": action.rollback_plan}
+            for action in decisions.actions
+        ], key=lambda item: item["finding_id"]),
+        "delete_paths": deleted, "rename_paths": renames,
+    })
+    artifact_hashes = {
+        name: sha256_file(run / name)
+        for name in ("preview.diff", "binary-changes.json", "placeholders.json")
+    }
     core = {
         "run_id": sha256(str(run).encode("utf-8")).hexdigest()[:16],
         "project_root": str(root), "preview_root": str(preview_root.resolve()),
@@ -285,28 +375,22 @@ def create_preview(
         "rename_tree_hashes": core["rename_tree_hashes"],
     })
     token_payload = dict(core)
-    token_payload.update({"brand_mode": decisions.brand_mode, "brand_result_hash": brand_result_hash})
+    token_payload.update({
+        "brand_mode": decisions.brand_mode, "brand_result_hash": brand_result_hash,
+        "decision_hash": decision_hash, "source_tree_hash": source_tree_hash,
+        "preview_tree_hash": preview_tree_hash, "artifact_hashes": artifact_hashes,
+    })
     manifest = PreviewManifest(**core, approval_token=_token(token_payload))
     manifest_payload = asdict(manifest)
-    manifest_payload.update({"brand_mode": decisions.brand_mode, "brand_result_hash": brand_result_hash})
+    manifest_payload.update({
+        "brand_mode": decisions.brand_mode, "brand_result_hash": brand_result_hash,
+        "decision_hash": decision_hash, "source_tree_hash": source_tree_hash,
+        "preview_tree_hash": preview_tree_hash, "artifact_hashes": artifact_hashes,
+    })
     (run / "manifest.json").write_text(
         json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
-    binary_operations = _operation_records(root, deleted, "delete", renames)
-    binary_operations.extend(_operation_records(root, renames, "rename", renames))
-    for relpath in sorted(changed):
-        binary_operations.append({"operation": "replace", "path": relpath, "destination": _preview_relpath(relpath, renames), "is_text": True})
-    (run / "binary-changes.json").write_text(json.dumps({"operations": binary_operations}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-    placeholders = []
-    if decisions.brand_mode == "placeholder":
-        for field, value in sorted(decisions.brand_profile.items()):
-            for record in iter_project_files(preview_root):
-                text = read_text(preview_root / record.relpath)
-                if text is not None and value in text:
-                    placeholders.append({"field": field, "path": record.relpath})
-    (run / "placeholders.json").write_text(json.dumps(placeholders, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (run / "preview.md").write_text("\n".join([
         "# De-starter Preview", "", "- Brand mode: `{}`".format(decisions.brand_mode),
         "- Changed files: `{}`".format(len(preview_hashes)), "- Deleted paths: `{}`".format(len(deleted)),

@@ -51,3 +51,44 @@ passed
 git diff --check
 passed
 ```
+
+## Final review remediation
+
+### RED
+
+Added focused regressions for a secret on the same line as a permitted brand
+replacement, an added safe source file after audit, a nested `.env` directory
+inside a delete scope, and a `node_modules` symlink. The initial focused run
+showed the diff-context secret leak, accepted stale inventories and hidden
+secret directories, and rejected the ignored pnpm-style symlink.
+
+### GREEN
+
+Preview reports now reuse the scanner/report assignment redactor before any
+diff is written, then redact secret-like user supplied values. The source safe
+inventory must exactly equal the audit inventory before any preview cleanup or
+copy. Operation roots reject secret directories as well as secret files and
+case-insensitive ignored directories; symlink inspection prunes those excluded
+trees first.
+
+The approval payload now also binds a canonical decision hash, complete safe
+source/preview tree snapshots, and hashes of the three review artifacts. These
+additive fields are persisted in `manifest.json`; profile values themselves are
+only hashed. Placeholder output now uses a neutral marker, identifier, and
+deduplicated locations. A deterministic rerun and explicit `keep`-decision
+regression confirms approval tokens are stable for identical input and change
+when explicit approval changes.
+
+```text
+python3 -m unittest tests.test_preview_apply -v
+12 tests passed
+
+python3 -m unittest discover -s tests -v
+50 tests passed
+
+python3 -m compileall -q skills/de-starter/scripts tests
+passed
+
+git diff --check
+passed
+```
