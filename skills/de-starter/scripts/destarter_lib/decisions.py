@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Set
 
+from .files import IGNORED_DIRS
 from .models import AuditResult, DecisionAction, DecisionSet, Finding, RiskLevel
 
 
@@ -23,10 +24,15 @@ PLACEHOLDER_PROFILE = {
 _TOP_LEVEL_KEYS = {"brand_mode", "brand_profile", "actions", "delete_paths", "rename_paths"}
 _ACTION_KEYS = {"finding_id", "action", "replacement", "migration_plan", "rollback_plan"}
 _VALID_ACTIONS = {"keep", "replace"}
+_PROTECTED_FILE_STEMS = {"license", "copying", "notice"}
 
 
 class DecisionError(ValueError):
     """Raised when a decision file is not safe to apply."""
+
+
+class _DuplicateKeyError(ValueError):
+    pass
 
 
 def _error_for_unknown_keys(payload: Mapping[str, object], allowed: Set[str], label: str) -> None:
@@ -60,10 +66,12 @@ def _validate_profile(mode: str, raw_profile: object) -> Dict[str, str]:
 def _project_path(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise DecisionError("{} must stay inside the project".format(label))
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts or str(path) in {"", "."}:
+    if "\\" in value or value.startswith("/") or (len(value) >= 2 and value[1] == ":"):
         raise DecisionError("{} must stay inside the project".format(label))
-    return path.as_posix()
+    parts = [part for part in value.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise DecisionError("{} must stay inside the project".format(label))
+    return "/".join(parts)
 
 
 def _contains(parent: str, child: str) -> bool:
@@ -87,10 +95,54 @@ def _validate_protected_paths(audit: AuditResult, paths: Iterable[str], operatio
             )
 
 
+def _is_protected_path(path: str) -> bool:
+    for part in path.split("/"):
+        lowered = part.casefold()
+        stem = lowered.split(".", 1)[0]
+        if lowered in IGNORED_DIRS or stem in _PROTECTED_FILE_STEMS:
+            return True
+    return False
+
+
+def _validate_invariant_paths(paths: Iterable[str], operation: str) -> None:
+    for path in paths:
+        if _is_protected_path(path):
+            raise DecisionError(
+                "{} path contains protected finding: invariant path {}".format(operation, path)
+            )
+
+
+def _validate_audited_paths(audit: AuditResult, paths: Iterable[str], operation: str) -> None:
+    for path in paths:
+        findings = list(_findings_under(audit, path))
+        if operation == "delete":
+            approved = any(item.risk is RiskLevel.P2 for item in findings)
+            message = "delete_paths must correspond to an audited P2 scope"
+        else:
+            approved = any(
+                item.risk is RiskLevel.P2 or item.category == "file-or-directory-name"
+                for item in findings
+            )
+            message = "rename_paths must correspond to an audited P2 or path finding scope"
+        if not approved:
+            raise DecisionError(message + ": " + path)
+
+
+def _reject_duplicate_keys(pairs: List[object]) -> Dict[str, object]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateKeyError("duplicate JSON key: {}".format(key))
+        result[key] = value
+    return result
+
+
 def _load_payload(path: Path) -> Mapping[str, object]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, _DuplicateKeyError) as error:
         raise DecisionError("invalid decisions JSON: {}".format(error)) from error
     if not isinstance(payload, dict):
         raise DecisionError("decisions JSON must be an object")
@@ -115,7 +167,7 @@ def _validate_actions(raw_actions: object, findings: Mapping[str, Finding]) -> L
         seen.add(finding_id)
         if finding_id not in findings:
             raise DecisionError("unknown finding: {}".format(finding_id))
-        if action not in _VALID_ACTIONS:
+        if not isinstance(action, str) or action not in _VALID_ACTIONS:
             raise DecisionError("action must be keep or replace")
         finding = findings[finding_id]
         if finding.line == 0 and action == "replace":
@@ -155,7 +207,7 @@ def load_decisions(path: Path, audit: AuditResult) -> DecisionSet:
     payload = _load_payload(path)
     _error_for_unknown_keys(payload, _TOP_LEVEL_KEYS, "decision")
     mode = payload.get("brand_mode")
-    if mode not in {"real", "placeholder"}:
+    if not isinstance(mode, str) or mode not in {"real", "placeholder"}:
         raise DecisionError("brand_mode must be real or placeholder")
     profile = _validate_profile(mode, payload.get("brand_profile", {}))
     findings = {item.finding_id: item for item in audit.findings}
@@ -181,6 +233,8 @@ def load_decisions(path: Path, audit: AuditResult) -> DecisionSet:
         destination_path = _project_path(destination, "rename_paths")
         if source_path == destination_path:
             raise DecisionError("rename_paths source and destination must differ")
+        if source_path in rename_paths:
+            raise DecisionError("rename_paths cannot contain normalized source duplicates")
         rename_paths[source_path] = destination_path
     destinations = list(rename_paths.values())
     if len(set(destinations)) != len(destinations):
@@ -204,6 +258,10 @@ def load_decisions(path: Path, audit: AuditResult) -> DecisionSet:
         ):
             raise DecisionError("rename_paths destinations cannot overlap")
 
+    _validate_invariant_paths(delete_paths, "delete")
+    _validate_invariant_paths(rename_paths, "rename")
+    _validate_audited_paths(audit, delete_paths, "delete")
+    _validate_audited_paths(audit, rename_paths, "rename")
     _validate_protected_paths(audit, delete_paths, "delete")
     _validate_protected_paths(audit, rename_paths, "rename")
     return DecisionSet(mode, profile, actions, delete_paths, rename_paths)

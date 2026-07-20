@@ -26,6 +26,11 @@ class DecisionTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
+    def write_raw(self, payload: bytes) -> Path:
+        path = Path(self.temp.name) / "decisions.json"
+        path.write_bytes(payload)
+        return path
+
     def test_real_brand_requires_all_fields(self) -> None:
         path = self.write({"brand_mode": "real", "brand_profile": {"product_name": "Nova"}, "actions": []})
         with self.assertRaisesRegex(DecisionError, "missing brand fields"):
@@ -133,6 +138,76 @@ class DecisionTests(unittest.TestCase):
                 "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
                 "rename_paths": {"app/demo": "app/showcase", "app/showcase": "app/archive"},
             }), self.audit)
+
+    def test_rejects_non_portable_or_empty_project_paths(self) -> None:
+        unsafe_paths = ["/escaped", "\\\\server\\share", "C:escaped", "C:\\escaped", "app\\demo", ".", ""]
+        for unsafe_path in unsafe_paths:
+            with self.subTest(unsafe_path=unsafe_path):
+                with self.assertRaisesRegex(DecisionError, "delete_paths"):
+                    load_decisions(self.write({
+                        "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                        "delete_paths": [unsafe_path],
+                    }), self.audit)
+
+    def test_rejects_legal_and_ignored_roots_without_audit_findings(self) -> None:
+        empty_audit = scan_project(self.root, [])
+        for path in ["LICENSE.md", "docs/NOTICE", ".git/config", "node_modules/pkg", "build/output"]:
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(DecisionError, "protected"):
+                    load_decisions(self.write({
+                        "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                        "delete_paths": [path],
+                    }), empty_audit)
+
+    def test_filesystem_operations_require_an_audited_scope(self) -> None:
+        with self.assertRaisesRegex(DecisionError, "audited P2"):
+            load_decisions(self.write({
+                "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                "delete_paths": ["untracked"],
+            }), self.audit)
+        with self.assertRaisesRegex(DecisionError, "audited"):
+            load_decisions(self.write({
+                "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                "rename_paths": {"untracked": "renamed"},
+            }), self.audit)
+        decisions = load_decisions(self.write({
+            "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+            "rename_paths": {"app/demo": "app/showcase"},
+        }), self.audit)
+        self.assertEqual(decisions.rename_paths, {"app/demo": "app/showcase"})
+
+    def test_rejects_normalized_path_collisions_and_duplicate_json_keys(self) -> None:
+        with self.assertRaisesRegex(DecisionError, "duplicates"):
+            load_decisions(self.write({
+                "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                "rename_paths": {"app/demo": "app/showcase", "app//demo": "app/archive"},
+            }), self.audit)
+        with self.assertRaisesRegex(DecisionError, "duplicate JSON key"):
+            load_decisions(self.write_raw(
+                b'{"brand_mode":"placeholder","brand_mode":"real","brand_profile":{},"actions":[]}'
+            ), self.audit)
+        with self.assertRaisesRegex(DecisionError, "duplicate JSON key"):
+            load_decisions(self.write_raw(
+                b'{"brand_mode":"placeholder","brand_profile":{},"actions":[],"rename_paths":{"app/demo":"app/showcase","app/demo":"app/archive"}}'
+            ), self.audit)
+
+    def test_invalid_json_encoding_and_container_types_raise_decision_error(self) -> None:
+        with self.assertRaisesRegex(DecisionError, "invalid decisions JSON"):
+            load_decisions(self.write_raw(b'\xff'), self.audit)
+        for value in ([], {}):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(DecisionError, "brand_mode"):
+                    load_decisions(self.write({
+                        "brand_mode": value, "brand_profile": {}, "actions": [],
+                    }), self.audit)
+        finding = next(item for item in self.audit.findings if item.risk.value == "P3")
+        for value in ([], {}):
+            with self.subTest(action=value):
+                with self.assertRaisesRegex(DecisionError, "action must"):
+                    load_decisions(self.write({
+                        "brand_mode": "placeholder", "brand_profile": {},
+                        "actions": [{"finding_id": finding.finding_id, "action": value}],
+                    }), self.audit)
 
 
 if __name__ == "__main__":
