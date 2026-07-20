@@ -1,0 +1,4 @@
+interface:
+  display_name: "De-starter"
+  short_description: "Audit and safely remove starter-template residue"
+  default_prompt: "Use $de-starter to audit this project for starter-template residue and show me a report and proposed diff before making changes."
