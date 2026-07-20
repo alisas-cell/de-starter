@@ -12,14 +12,21 @@ from typing import Dict, Iterable, List, Mapping, Tuple
 from .files import sha256_file
 from .models import ApplyResult, PreviewManifest
 from .preview import (
-    _OWNER_FILE, _contains, _ensure_no_symlinks, _safe_file_records,
-    _safe_relpath, _snapshot_hash, _token, _tree_hash,
+    _OWNER_FILE, _contains, _contains_secret_or_ignored, _ensure_no_symlinks, _safe_file_records,
+    _safe_relpath, _snapshot_hash, _state_hash, _token, _tree_hash,
 )
 from .report import redact_evidence
 
 
 _BACKUP_OWNER = ".destarter-backup-owner.json"
 _ARTIFACTS = ("preview.diff", "binary-changes.json", "placeholders.json")
+_MANIFEST_KEYS = {
+    "run_id", "project_root", "preview_root", "source_hashes", "preview_hashes",
+    "delete_tree_hashes", "rename_tree_hashes", "changed_paths", "deleted_paths",
+    "renamed_paths", "approval_token", "brand_mode", "brand_result_hash",
+    "decision_hash", "source_tree_hash", "preview_tree_hash", "source_state_hash",
+    "preview_state_hash", "artifact_hashes",
+}
 
 
 class ApplyError(RuntimeError):
@@ -31,12 +38,21 @@ def _fail(message: str) -> None:
 
 
 def _load_json(path: Path) -> Mapping[str, object]:
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         _fail("invalid preview manifest: {}".format(error))
     if not isinstance(value, dict):
         _fail("invalid preview manifest")
+    if set(value) != _MANIFEST_KEYS:
+        _fail("invalid preview manifest keys")
     return value
 
 
@@ -121,7 +137,7 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
     rename_hashes = _rename_hashes(payload.get("rename_tree_hashes"), renames)
     if payload.get("brand_mode") not in {"real", "placeholder"}:
         _fail("invalid manifest brand_mode")
-    for name in ("brand_result_hash", "decision_hash", "source_tree_hash", "preview_tree_hash"):
+    for name in ("brand_result_hash", "decision_hash", "source_tree_hash", "preview_tree_hash", "source_state_hash", "preview_state_hash"):
         _digest(payload.get(name), name)
     artifacts = _hashes(payload.get("artifact_hashes"), "artifact_hashes")
     if set(artifacts) != set(_ARTIFACTS):
@@ -135,7 +151,7 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
         "changed_paths": changed, "deleted_paths": deleted, "renamed_paths": renames,
     }
     additive = {name: payload[name] for name in (
-        "brand_mode", "brand_result_hash", "decision_hash", "source_tree_hash", "preview_tree_hash", "artifact_hashes"
+        "brand_mode", "brand_result_hash", "decision_hash", "source_tree_hash", "preview_tree_hash", "source_state_hash", "preview_state_hash", "artifact_hashes"
     )}
     expected = _token(dict(core, **additive))
     if token != expected:
@@ -179,9 +195,15 @@ def _verify_approval(root: Path, run: Path, manifest: PreviewManifest, raw: Mapp
         _fail("preview ownership marker is invalid: {}".format(error))
     if owner != {"project_root": str(root)}:
         _fail("preview is not owned by this project")
-    _ensure_no_symlinks(root)
-    _ensure_no_symlinks(preview)
+    try:
+        _ensure_no_symlinks(root)
+        _ensure_no_symlinks(preview)
+    except ValueError as error:
+        _fail(str(error))
     _validate_operation_shapes(manifest)
+    for relpath in list(manifest.deleted_paths) + list(manifest.renamed_paths):
+        if _contains_secret_or_ignored(root, relpath):
+            _fail("operation root contains excluded secret file or ignored metadata: {}".format(relpath))
     for relpath, expected in manifest.delete_tree_hashes.items():
         try:
             actual = _tree_hash(root, relpath)
@@ -210,6 +232,10 @@ def _verify_approval(root: Path, run: Path, manifest: PreviewManifest, raw: Mapp
     if _snapshot_hash(_safe_file_records(root)) != raw["source_tree_hash"]:
         _fail("source changed after preview")
     if _snapshot_hash(_safe_file_records(preview, {_OWNER_FILE})) != raw["preview_tree_hash"]:
+        _fail("preview changed after approval token creation")
+    if _state_hash(root) != raw["source_state_hash"]:
+        _fail("source changed after preview")
+    if _state_hash(preview, {_OWNER_FILE}) != raw["preview_state_hash"]:
         _fail("preview changed after approval token creation")
     for name, expected in raw["artifact_hashes"].items():
         path = run / _safe_relpath(name)
@@ -286,6 +312,18 @@ def _write_file_atomic(source: Path, destination: Path) -> None:
             temporary.unlink()
 
 
+def _write_text_atomic(destination: Path, text: str) -> None:
+    fd, temporary_name = tempfile.mkstemp(prefix=".destarter-", dir=str(destination.parent))
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(str(temporary), str(destination))
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
 def _materialize_tree(preview: Path, destination: Path) -> None:
     temporary = Path(tempfile.mkdtemp(prefix=".destarter-", dir=str(destination.parent)))
     shutil.rmtree(temporary)
@@ -322,9 +360,13 @@ def _rollback(root: Path, backup: Path, records: Iterable[Mapping[str, str]], ma
 def _reverse_diff(root: Path, preview: Path, manifest: PreviewManifest) -> str:
     lines = []
     for original, expected in sorted(manifest.source_hashes.items()):
-        if any(_under(source, original) for source in manifest.renamed_paths) or any(_under(deleted, original) for deleted in manifest.deleted_paths):
+        if any(_under(deleted, original) for deleted in manifest.deleted_paths):
             continue
         rendered = original
+        for source, destination in manifest.renamed_paths.items():
+            if _under(source, original):
+                rendered = destination + original[len(source):]
+                break
         before, after = root / _safe_relpath(original), preview / _safe_relpath(rendered)
         if before.is_file() and after.is_file():
             try:
@@ -360,6 +402,15 @@ def apply_preview(project_root: Path, run_dir: Path, approval_token: str) -> App
             _fail("text replacement preflight failed: {}".format(relpath))
     backup, records = _backup(root, run, manifest)
     try:
+        # A backup is not authority to apply: source may have changed while copying it.
+        _verify_approval(root, run, manifest, raw, approval_token)
+    except Exception:
+        shutil.rmtree(backup, ignore_errors=True)
+        raise
+    try:
+        for relpath in list(manifest.deleted_paths) + list(manifest.renamed_paths):
+            if _contains_secret_or_ignored(root, relpath):
+                _fail("operation root contains excluded secret file or ignored metadata: {}".format(relpath))
         reverse = _reverse_diff(root, preview, manifest)
         for source, destination in manifest.renamed_paths.items():
             _materialize_tree(preview / _safe_relpath(destination), root / _safe_relpath(destination))
@@ -381,16 +432,19 @@ def apply_preview(project_root: Path, run_dir: Path, approval_token: str) -> App
         if _snapshot_hash(_safe_file_records(root)) != raw["preview_tree_hash"]:
             _fail("post-apply preview verification failed")
         restore_path = run / "restore.json"
-        restore_path.write_text(json.dumps({
+        _write_text_atomic(restore_path, json.dumps({
             "backup_root": str(backup), "operations": records,
             "deleted_paths": manifest.deleted_paths, "renamed_paths": manifest.renamed_paths,
-        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        (run / "reverse.diff").write_text(reverse, encoding="utf-8")
+        }, indent=2, sort_keys=True) + "\n")
+        _write_text_atomic(run / "reverse.diff", reverse)
     except Exception as error:
         try:
             _rollback(root, backup, records, manifest)
         except Exception as rollback_error:
             raise ApplyError("apply failed and rollback failed: {}".format(rollback_error)) from error
+        for artifact in (run / "restore.json", run / "reverse.diff"):
+            if artifact.exists():
+                artifact.unlink()
         raise ApplyError("apply failed; changes rolled back: {}".format(error)) from error
     return ApplyResult(manifest.run_id, manifest.changed_paths, manifest.deleted_paths,
                        manifest.renamed_paths, str(backup), str(run / "restore.json"))

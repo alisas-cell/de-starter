@@ -100,6 +100,26 @@ def _snapshot_hash(records: List[Dict[str, object]]) -> str:
     return _token({"files": records})
 
 
+def _state_hash(root: Path, excluded_names: Iterable[str] = ()) -> str:
+    """Bind every safe file, directory (including empty ones), and permission mode."""
+    excluded = set(excluded_names)
+    entries = []
+    for directory, dirs, files in os.walk(str(root), followlinks=False):
+        current = Path(directory)
+        dirs[:] = [name for name in dirs if not _is_ignored_name(name) and not _is_secret_name(name)]
+        rel_dir = current.relative_to(root).as_posix()
+        entries.append({"kind": "dir", "path": rel_dir, "mode": current.stat().st_mode & 0o777})
+        for name in sorted(files):
+            if name in excluded or _is_ignored_name(name) or _is_secret_name(name):
+                continue
+            path = current / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            entries.append({"kind": "file", "path": path.relative_to(root).as_posix(),
+                            "mode": path.stat().st_mode & 0o777, "sha256": sha256_file(path)})
+    return _token({"state": sorted(entries, key=lambda item: (str(item["path"]), str(item["kind"])))})
+
+
 def _tree_files(root: Path, relpath: str) -> List[Tuple[str, Path]]:
     target = root / _safe_relpath(relpath)
     if target.is_file():
@@ -220,6 +240,7 @@ def create_preview(
     if source_records != audited_records:
         raise ValueError("stale audit: safe source inventory changed")
     source_tree_hash = _snapshot_hash(source_records)
+    source_state_hash = _state_hash(root)
     for action in decisions.actions:
         if action.action == "replace":
             finding = next((item for item in audit.findings if item.finding_id == action.finding_id), None)
@@ -357,6 +378,7 @@ def create_preview(
     (run / "placeholders.json").write_text(json.dumps(placeholders, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     preview_tree_hash = _snapshot_hash(_safe_file_records(preview_root, {_OWNER_FILE}))
+    preview_state_hash = _state_hash(preview_root, {_OWNER_FILE})
     decision_hash = _token({
         "brand_mode": decisions.brand_mode,
         "brand_profile": decisions.brand_profile,
@@ -391,14 +413,16 @@ def create_preview(
     token_payload.update({
         "brand_mode": decisions.brand_mode, "brand_result_hash": brand_result_hash,
         "decision_hash": decision_hash, "source_tree_hash": source_tree_hash,
-        "preview_tree_hash": preview_tree_hash, "artifact_hashes": artifact_hashes,
+        "preview_tree_hash": preview_tree_hash, "source_state_hash": source_state_hash,
+        "preview_state_hash": preview_state_hash, "artifact_hashes": artifact_hashes,
     })
     manifest = PreviewManifest(**core, approval_token=_token(token_payload))
     manifest_payload = asdict(manifest)
     manifest_payload.update({
         "brand_mode": decisions.brand_mode, "brand_result_hash": brand_result_hash,
         "decision_hash": decision_hash, "source_tree_hash": source_tree_hash,
-        "preview_tree_hash": preview_tree_hash, "artifact_hashes": artifact_hashes,
+        "preview_tree_hash": preview_tree_hash, "source_state_hash": source_state_hash,
+        "preview_state_hash": preview_state_hash, "artifact_hashes": artifact_hashes,
     })
     (run / "manifest.json").write_text(
         json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"

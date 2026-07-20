@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
 import os
+import stat
 import sys
 import unittest
 from unittest.mock import patch
@@ -126,6 +127,106 @@ class PreviewApplyTests(unittest.TestCase):
                 with self.assertRaisesRegex(ApplyError, "rolled back"):
                     apply_preview(root, base / "run", manifest.approval_token)
             self.assertEqual((root / "messages/en.json").read_bytes(), original)
+
+    def test_apply_rejects_late_secret_operation_roots_and_mode_changes(self) -> None:
+        for operation in ("delete", "rename"):
+            with self.subTest(operation=operation), TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                root = copy_fixture("nextjs-starter", base)
+                audit = scan_project(root, ["Northstar", "demo"])
+                decisions = {"brand_mode": "placeholder", "brand_profile": {}, "actions": []}
+                decisions["{}_paths".format(operation)] = (
+                    ["app/demo"] if operation == "delete" else {"app/demo": "app/showcase"}
+                )
+                path = base / "decisions.json"
+                path.write_text(json.dumps(decisions), encoding="utf-8")
+                manifest = create_preview(root, base / "run", audit, load_decisions(path, audit))
+                (root / "app" / "demo" / ".env").write_text("TOKEN=not-copied", encoding="utf-8")
+                with self.assertRaisesRegex(ApplyError, "excluded secret"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+                self.assertFalse((base / "run" / "backup").exists())
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            target = root / "messages/en.json"
+            os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
+            with self.assertRaisesRegex(ApplyError, "source changed"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+    def test_apply_rechecks_state_after_backup_before_any_write(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            from destarter_lib import apply as module
+            original_backup = module._backup
+
+            def mutate_after_backup(*args):
+                result = original_backup(*args)
+                (root / "messages/en.json").write_text("changed after backup", encoding="utf-8")
+                return result
+
+            with patch("destarter_lib.apply._backup", side_effect=mutate_after_backup):
+                with self.assertRaisesRegex(ApplyError, "source changed"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertFalse((base / "run" / "backup").exists())
+
+    def test_apply_rolls_back_when_success_artifact_write_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            original = (root / "messages/en.json").read_bytes()
+            manifest = self._replacement_preview(root, base / "run")
+            with patch("destarter_lib.apply._write_text_atomic", side_effect=OSError("artifact failure")):
+                with self.assertRaisesRegex(ApplyError, "rolled back"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertEqual((root / "messages/en.json").read_bytes(), original)
+            self.assertFalse((base / "run" / "restore.json").exists())
+            self.assertFalse((base / "run" / "reverse.diff").exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_apply_preserves_raced_destination_and_parent_symlink_outside_root(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._rename_preview(root, base / "run")
+            from destarter_lib import apply as module
+            original_backup = module._backup
+
+            def create_destination(*args):
+                result = original_backup(*args)
+                (root / "app" / "showcase").write_text("user destination", encoding="utf-8")
+                return result
+
+            with patch("destarter_lib.apply._backup", side_effect=create_destination):
+                with self.assertRaisesRegex(ApplyError, "source changed"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertEqual((root / "app" / "showcase").read_text(encoding="utf-8"), "user destination")
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            outside = base / "outside"
+            outside.mkdir()
+            guard = outside / "guard.txt"
+            guard.write_text("outside", encoding="utf-8")
+            manifest = self._rename_preview(root, base / "run")
+            from destarter_lib import apply as module
+            original_backup = module._backup
+
+            def swap_parent(*args):
+                result = original_backup(*args)
+                import shutil
+                shutil.rmtree(root / "app")
+                (root / "app").symlink_to(outside, target_is_directory=True)
+                return result
+
+            with patch("destarter_lib.apply._backup", side_effect=swap_parent):
+                with self.assertRaisesRegex(ApplyError, "symlink"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertEqual(guard.read_text(encoding="utf-8"), "outside")
 
     def test_preview_changes_copy_but_not_source(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -411,6 +512,15 @@ class PreviewApplyTests(unittest.TestCase):
             "brand_mode": "placeholder", "brand_profile": {}, "actions": [{
                 "finding_id": finding.finding_id, "action": "replace", "replacement": "Your Product",
             }],
+        }), encoding="utf-8")
+        return create_preview(root, run, audit, load_decisions(decisions_path, audit))
+
+    def _rename_preview(self, root: Path, run: Path):
+        audit = scan_project(root, ["Northstar", "demo"])
+        decisions_path = run.parent / "decisions.json"
+        decisions_path.write_text(json.dumps({
+            "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+            "rename_paths": {"app/demo": "app/showcase"},
         }), encoding="utf-8")
         return create_preview(root, run, audit, load_decisions(decisions_path, audit))
 
