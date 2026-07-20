@@ -287,7 +287,7 @@ def create_preview(
             if index < 0 or index >= len(lines) or lines[index][start:end] != finding.matched:
                 raise ValueError("finding no longer matches preview source: {}".format(finding.finding_id))
             lines[index] = lines[index][:start] + (action.replacement or "") + lines[index][end:]
-        safe_write_text(path, "".join(lines))
+        safe_write_text(path, "".join(lines), stat.S_IMODE(path.stat().st_mode))
         changed.add(relpath)
 
     delete_tree_hashes = {relpath: _tree_hash(root, relpath) for relpath in deleted}

@@ -15,8 +15,10 @@ SAFE_ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
 MAX_TEXT_BYTES = 2 * 1024 * 1024
 
 
-def safe_write_text(path: Path, text: str) -> None:
+def safe_write_text(path: Path, text: str, mode: int = 0o600) -> None:
     """Atomically replace an artifact without following its final pathname."""
+    if type(mode) is not int or mode < 0 or mode > 0o777:
+        raise ValueError("invalid artifact mode")
     if os.name == "nt":
         raise OSError("safe artifact writing is unavailable on this platform")
     try:
@@ -32,6 +34,7 @@ def safe_write_text(path: Path, text: str) -> None:
             temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             0o600, dir_fd=parent_fd,
         )
+        os.fchmod(descriptor, mode)
         view = memoryview(text.encode("utf-8"))
         while view:
             view = view[os.write(descriptor, view):]

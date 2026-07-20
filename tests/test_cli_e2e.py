@@ -202,6 +202,37 @@ class CliEndToEndTests(unittest.TestCase):
             audit["files"][0]["size"] = -1
             (run / "audit.json").write_text(json.dumps(audit), encoding="utf-8")
             self.assertNotEqual(self.run_cli("preview", "--project", str(root), "--run-dir", str(run), "--decisions", str(decisions)).returncode, 0)
+
+    def test_preview_and_apply_preserve_project_modes_but_keep_artifacts_private(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            regular = root / "regular.txt"
+            executable = root / "tool.sh"
+            regular.write_text("Northstar regular\n", encoding="utf-8")
+            executable.write_text("#!/bin/sh\n# Northstar executable\n", encoding="utf-8")
+            os.chmod(regular, 0o644)
+            os.chmod(executable, 0o755)
+            run = base / "run"
+            source = self.write_json(base / "source.json", {"source_terms": ["Northstar"]})
+            self.assertEqual(self.run_cli("audit", "--project", str(root), "--run-dir", str(run), "--source-config", str(source)).returncode, 0)
+            audit = json.loads((run / "audit.json").read_text(encoding="utf-8"))
+            actions = []
+            for relpath in ("regular.txt", "tool.sh"):
+                finding = next(item for item in audit["findings"] if item["relpath"] == relpath and item["risk"] == "P3")
+                actions.append({"finding_id": finding["finding_id"], "action": "replace", "replacement": "Your Product"})
+            decisions = self.write_json(base / "decisions.json", {"brand_mode": "placeholder", "brand_profile": {}, "actions": actions})
+            preview = self.run_cli("preview", "--project", str(root), "--run-dir", str(run), "--decisions", str(decisions))
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual((run / "preview" / "regular.txt").stat().st_mode & 0o777, 0o644)
+            self.assertEqual((run / "preview" / "tool.sh").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((run / "preview.diff").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((run / "manifest.json").stat().st_mode & 0o777, 0o600)
+            token = preview.stdout.strip().splitlines()[-1]
+            applied = self.run_cli("apply", "--project", str(root), "--run-dir", str(run), "--approval-token", token)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(regular.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(executable.stat().st_mode & 0o777, 0o755)
             audit = json.loads((run / "audit.json").read_text(encoding="utf-8"))
             audit["files"][0]["size"] = 1
             audit["findings"][0]["line"] = True
