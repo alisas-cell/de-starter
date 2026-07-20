@@ -1,0 +1,78 @@
+import json
+import re
+from dataclasses import asdict
+from pathlib import Path
+from typing import Dict
+
+from .models import AuditResult
+
+
+SECRET_VALUE_RE = re.compile(
+    r"(?i)((?:api[_-]?key|secret|token|password)[A-Z0-9_ -]*[=:]\s*)"
+    r"(?:[\"'][^\"']+[\"']|[^\s,;]+)"
+)
+
+
+def redact_evidence(value: str) -> str:
+    """Remove assignment values from evidence before it leaves the scanner."""
+    return SECRET_VALUE_RE.sub(r"\1[REDACTED]", value)
+
+
+def audit_to_dict(audit: AuditResult) -> Dict[str, object]:
+    return {
+        "project": asdict(audit.project),
+        "source_terms": audit.source_terms,
+        "findings": [
+            {
+                **asdict(item),
+                "risk": item.risk.value,
+                "evidence": redact_evidence(item.evidence),
+            }
+            for item in audit.findings
+        ],
+        "files": [asdict(item) for item in audit.files],
+    }
+
+
+def write_audit_reports(audit: AuditResult, run_dir: Path) -> None:
+    """Write JSON and Markdown audit reports with redacted evidence."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    payload = audit_to_dict(audit)
+    (run_dir / "audit.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    lines = [
+        "# De-starter Audit",
+        "",
+        "- Project kind: `{}`".format(audit.project.kind),
+        "- Git present: `{}`".format(str(audit.project.git_present).lower()),
+        "- Git dirty: `{}`".format(audit.project.git_dirty),
+        "- Findings: `{}`".format(len(audit.findings)),
+        "- Confirmed source terms: `{}`".format(", ".join(audit.source_terms)),
+        "",
+        "## Findings",
+        "",
+        "| ID | Risk | Category | Location | Evidence |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for item in sorted(
+        audit.findings,
+        key=lambda value: (value.risk.value, value.relpath, value.line),
+    ):
+        evidence = redact_evidence(item.evidence).replace("|", "\\|").replace("`", "'")
+        lines.append(
+            "| {} | {} | {} | `{}:{}:{}` | {} |".format(
+                item.finding_id,
+                item.risk.value,
+                item.category,
+                item.relpath,
+                item.line,
+                item.column,
+                evidence,
+            )
+        )
+    lines.extend(["", "## Validation Plan", ""])
+    lines.extend("- `{}`".format(command) for command in audit.project.validation_commands)
+    (run_dir / "audit.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
