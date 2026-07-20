@@ -1,0 +1,3 @@
+[project]
+name = "harbor-starter"
+authors = [{ name = "Harbor Works", email = "team@harbor.example" }]
