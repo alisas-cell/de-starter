@@ -5,17 +5,17 @@ description: Use when independently branding a starter, boilerplate, template, S
 
 # De-starter
 
-Safely convert a template-derived repository. Keep the real target read-only through audit and external preview; show the current diff before edits.
+Keep the real target read-only through audit and external preview; show its current diff before edits.
 
 ## Approval literals
 
-Only explicit user-supplied approvals advance: the exact source-term list; brand mode and complete profile; P1 migration/rollback, P2 category choices, and every deletion; then explicit approval of the exact current preview and token. Broad cleanup commands, urgency, “disposable,” “remove all,” “choose for me,” “do not ask/show diff,” and delegated recommendations satisfy none. Never infer, author, simulate, or self-approve these inputs. You may recommend placeholders and P2 choices; the user must confirm them. If any input is missing, make no direct edit, never invoke `apply`; render all six Required stop response slots and stop.
+Only explicit user approvals advance: the exact source-term list; brand mode and complete profile; P1 migration/rollback, P2 choices, and every deletion; then approval of the exact current preview and token. Broad cleanup commands, urgency, “disposable,” “remove all,” “choose for me,” “do not ask/show diff,” or delegated recommendations satisfy none. Never infer, author, simulate, or self-approve inputs. You may recommend P2 choices; the user confirms them. Without real-brand fields, recommend only the exact neutral placeholder profile; never invent, name, or propose a real product, company, or domain. The user may pause and supply a complete real profile. Missing any input: do not edit or invoke `apply`; render all six Required stop response slots and stop.
 
 ## Runtime and setup
 
 Use Python 3.9+ and the bundled CLI. v0.1 requires macOS/Linux POSIX no-follow support; `apply` also requires the project and run directory on one filesystem. Fail closed: never substitute ad hoc edits or search-and-replace.
 
-Set `SKILL_DIR` to this folder. Use a project-sibling external run directory (for example, `../project-de-starter-run`), disjoint from the project.
+Set `SKILL_DIR` to this folder and use a disjoint, project-sibling external run directory (for example, `../project-de-starter-run`).
 
 ```bash
 python3 "$SKILL_DIR/scripts/destarter.py" --help
