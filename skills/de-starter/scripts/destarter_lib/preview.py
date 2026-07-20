@@ -11,7 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Tuple
 
-from .files import IGNORED_DIRS, is_secret_name, read_text, sha256_file
+from .files import IGNORED_DIRS, is_secret_name, read_text, safe_write_text, sha256_file
 from .models import AuditResult, DecisionSet, PreviewManifest
 from .report import redact_evidence
 from .decisions import PLACEHOLDER_PROFILE
@@ -257,9 +257,7 @@ def create_preview(
     if run.is_symlink() or not run.is_dir():
         raise ValueError("run directory must be a real directory")
     shutil.copytree(root, preview_root, ignore=_ignore)
-    (preview_root / _OWNER_FILE).write_text(
-        json.dumps({"project_root": str(root)}, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    safe_write_text(preview_root / _OWNER_FILE, json.dumps({"project_root": str(root)}, sort_keys=True) + "\n")
 
     findings = {item.finding_id: item for item in audit.findings}
     changed = set()
@@ -289,7 +287,7 @@ def create_preview(
             if index < 0 or index >= len(lines) or lines[index][start:end] != finding.matched:
                 raise ValueError("finding no longer matches preview source: {}".format(finding.finding_id))
             lines[index] = lines[index][:start] + (action.replacement or "") + lines[index][end:]
-        path.write_text("".join(lines), encoding="utf-8")
+        safe_write_text(path, "".join(lines))
         changed.add(relpath)
 
     delete_tree_hashes = {relpath: _tree_hash(root, relpath) for relpath in deleted}
@@ -342,15 +340,13 @@ def create_preview(
         diff_lines.append("Binary/path rename: {} -> {} ({} -> {})\n".format(
             source, destination, detail["source_hash"], detail["preview_hash"]
         ))
-    (run / "preview.diff").write_text(
-        _redact_report_text("".join(diff_lines), decisions), encoding="utf-8"
-    )
+    safe_write_text(run / "preview.diff", _redact_report_text("".join(diff_lines), decisions))
 
     binary_operations = _operation_records(root, deleted, "delete", renames)
     binary_operations.extend(_operation_records(root, renames, "rename", renames))
     for relpath in sorted(changed):
         binary_operations.append({"operation": "replace", "path": relpath, "destination": _preview_relpath(relpath, renames), "is_text": True})
-    (run / "binary-changes.json").write_text(json.dumps({"operations": binary_operations}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    safe_write_text(run / "binary-changes.json", json.dumps({"operations": binary_operations}, indent=2, sort_keys=True) + "\n")
 
     placeholders = []
     if decisions.brand_mode == "placeholder":
@@ -376,7 +372,7 @@ def create_preview(
                 "occurrences": occurrences,
                 "locations": locations,
             })
-    (run / "placeholders.json").write_text(json.dumps(placeholders, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    safe_write_text(run / "placeholders.json", json.dumps(placeholders, indent=2, sort_keys=True) + "\n")
 
     preview_tree_hash = _snapshot_hash(_safe_file_records(preview_root, {_OWNER_FILE}))
     preview_state_hash = _state_hash(preview_root, {_OWNER_FILE})
@@ -425,14 +421,12 @@ def create_preview(
         "preview_tree_hash": preview_tree_hash, "source_state_hash": source_state_hash,
         "preview_state_hash": preview_state_hash, "artifact_hashes": artifact_hashes,
     })
-    (run / "manifest.json").write_text(
-        json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    safe_write_text(run / "manifest.json", json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n")
 
-    (run / "preview.md").write_text("\n".join([
+    safe_write_text(run / "preview.md", "\n".join([
         "# De-starter Preview", "", "- Brand mode: `{}`".format(decisions.brand_mode),
         "- Changed files: `{}`".format(len(preview_hashes)), "- Deleted paths: `{}`".format(len(deleted)),
         "- Renamed paths: `{}`".format(len(renames)), "- Approval token: `{}`".format(manifest.approval_token), "",
         "Review `audit.md`, `preview.diff`, `binary-changes.json`, and `placeholders.json` before approval.", "",
-    ]), encoding="utf-8")
+    ]))
     return manifest

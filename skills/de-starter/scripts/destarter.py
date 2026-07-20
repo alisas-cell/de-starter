@@ -12,10 +12,10 @@ from destarter_lib.adapters import detect_project
 from destarter_lib.apply import ApplyError, apply_preview
 from destarter_lib.candidates import discover_candidates
 from destarter_lib.decisions import DecisionError, load_decisions
-from destarter_lib.files import iter_project_files
+from destarter_lib.files import iter_project_files, safe_write_text
 from destarter_lib.models import AuditResult, FileRecord, Finding, ProjectFacts, RiskLevel
 from destarter_lib.preview import create_preview
-from destarter_lib.report import redact_evidence, write_audit_reports
+from destarter_lib.report import audit_to_dict, redact_evidence, write_audit_reports
 from destarter_lib.scanner import _source_terms as canonical_source_terms, scan_project
 
 
@@ -69,7 +69,7 @@ def _contains(parent: Path, child: Path) -> bool:
 
 def _write(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    safe_write_text(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
 
 
 def _source_terms(path: Path) -> list:
@@ -128,7 +128,7 @@ def _load_audit(path: Path) -> AuditResult:
         raise CliError("invalid audit files")
     for value in payload["files"]:
         item = _audit_dict(value, "file", {"relpath", "size", "sha256", "is_text"})
-        if not isinstance(item["size"], int) or type(item["is_text"]) is not bool:
+        if type(item["size"]) is not int or item["size"] < 0 or type(item["is_text"]) is not bool:
             raise CliError("invalid audit file")
         files.append(FileRecord(_relpath(item["relpath"], "file path"), item["size"], _sha(item["sha256"], "file hash"), item["is_text"]))
     if len({item.relpath for item in files}) != len(files):
@@ -139,7 +139,7 @@ def _load_audit(path: Path) -> AuditResult:
     for value in payload["findings"]:
         item = _audit_dict(value, "finding", {"finding_id", "relpath", "line", "column", "matched", "category", "risk", "evidence", "sha256"})
         if (any(not isinstance(item[name], str) or not item[name] for name in ("finding_id", "matched", "category", "evidence"))
-                or any(not isinstance(item[name], int) or item[name] < 0 for name in ("line", "column"))):
+                or any(type(item[name]) is not int or item[name] < 0 for name in ("line", "column"))):
             raise CliError("invalid audit finding")
         try:
             risk = RiskLevel(item["risk"])
@@ -180,8 +180,12 @@ def main(argv: Sequence[str] = ()) -> int:
         if args.command == "verify":
             print("remaining findings: {}".format(len(audit.findings)))
         print(target / "audit.md")
+        if args.command == "verify" and audit.findings:
+            return 3
     elif args.command == "preview":
         audit = _load_audit(run / "audit.json")
+        if audit_to_dict(audit) != audit_to_dict(scan_project(root, audit.source_terms)):
+            raise CliError("audit does not match current scan")
         manifest = create_preview(root, run, audit, load_decisions(args.decisions, audit))
         print(run / "preview.diff")
         print(manifest.approval_token)
@@ -195,6 +199,18 @@ def main(argv: Sequence[str] = ()) -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (CliError, DecisionError, ApplyError, ValueError, OSError) as error:
+    except CliError as error:
         print("destarter: {}".format(str(error) or "operation failed"), file=sys.stderr)
+        raise SystemExit(1)
+    except DecisionError:
+        print("destarter: invalid decisions", file=sys.stderr)
+        raise SystemExit(1)
+    except ApplyError:
+        print("destarter: approval failed", file=sys.stderr)
+        raise SystemExit(1)
+    except OSError:
+        print("destarter: artifact write failed", file=sys.stderr)
+        raise SystemExit(1)
+    except ValueError:
+        print("destarter: preview failed", file=sys.stderr)
         raise SystemExit(1)

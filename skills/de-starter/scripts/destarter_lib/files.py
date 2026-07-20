@@ -1,6 +1,8 @@
 from hashlib import sha256
+import os
 from pathlib import Path
 from typing import Iterator, Optional
+import uuid
 
 from .models import FileRecord
 
@@ -11,6 +13,43 @@ IGNORED_DIRS = {
 }
 SAFE_ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
 MAX_TEXT_BYTES = 2 * 1024 * 1024
+
+
+def safe_write_text(path: Path, text: str) -> None:
+    """Atomically replace an artifact without following its final pathname."""
+    if os.name == "nt":
+        raise OSError("safe artifact writing is unavailable on this platform")
+    try:
+        parent_fd = os.open(
+            str(path.parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+    except OSError as error:
+        raise OSError("unsafe artifact directory") from error
+    temporary = ".destarter-write-{}".format(uuid.uuid4().hex)
+    descriptor = None
+    try:
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600, dir_fd=parent_fd,
+        )
+        view = memoryview(text.encode("utf-8"))
+        while view:
+            view = view[os.write(descriptor, view):]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(temporary, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except OSError:
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except OSError:
+            pass
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent_fd)
 
 
 def sha256_file(path: Path) -> str:

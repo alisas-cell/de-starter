@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict
 
 from .models import AuditResult
+from .files import safe_write_text
 from .scanner import SECRET_ASSIGNMENT_RE
 
 
@@ -53,10 +54,7 @@ def write_audit_reports(audit: AuditResult, run_dir: Path) -> None:
     """Write JSON and Markdown audit reports with redacted evidence."""
     run_dir.mkdir(parents=True, exist_ok=True)
     payload = audit_to_dict(audit)
-    (run_dir / "audit.json").write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    safe_write_text(run_dir / "audit.json", json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
 
     lines = [
         "# De-starter Audit",
@@ -87,4 +85,4 @@ def write_audit_reports(audit: AuditResult, run_dir: Path) -> None:
         )
     lines.extend(["", "## Validation Plan", ""])
     lines.extend("- `{}`".format(command) for command in audit.project.validation_commands)
-    (run_dir / "audit.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    safe_write_text(run_dir / "audit.md", "\n".join(lines) + "\n")
