@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 from tests.support import SKILL_SCRIPTS, copy_fixture
 
@@ -12,9 +13,120 @@ sys.path.insert(0, str(SKILL_SCRIPTS))
 from destarter_lib.decisions import load_decisions
 from destarter_lib.preview import create_preview
 from destarter_lib.scanner import scan_project
+from destarter_lib.apply import ApplyError, apply_preview
 
 
 class PreviewApplyTests(unittest.TestCase):
+    def test_apply_rejects_wrong_token_and_stale_source_or_preview(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            with self.assertRaisesRegex(ApplyError, "approval token"):
+                apply_preview(root, base / "run", "wrong")
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            (root / "messages/en.json").write_text('{"brand":"changed"}', encoding="utf-8")
+            with self.assertRaisesRegex(ApplyError, "source changed"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            (root / "new-safe-file.txt").write_text("added", encoding="utf-8")
+            with self.assertRaisesRegex(ApplyError, "source changed"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            (Path(manifest.preview_root) / "messages/en.json").write_text('{"brand":"tampered"}', encoding="utf-8")
+            with self.assertRaisesRegex(ApplyError, "preview changed"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+    def test_apply_rejects_new_file_in_delete_tree(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            audit = scan_project(root, ["Northstar", "demo"])
+            path = base / "decisions.json"
+            path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                                        "delete_paths": ["app/demo"]}), encoding="utf-8")
+            manifest = create_preview(root, base / "run", audit, load_decisions(path, audit))
+            (root / "app" / "demo" / "new-user-file.tsx").write_text("export default 1", encoding="utf-8")
+            with self.assertRaisesRegex(ApplyError, "delete tree changed"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+    def test_apply_rejects_artifact_manifest_and_rename_tree_tampering(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            (base / "run" / "preview.diff").write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(ApplyError, "artifact changed"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            manifest = self._replacement_preview(root, base / "run")
+            payload = json.loads((base / "run" / "manifest.json").read_text(encoding="utf-8"))
+            payload["brand_mode"] = "real"
+            (base / "run" / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ApplyError, "manifest approval token"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            audit = scan_project(root, ["Northstar", "demo"])
+            path = base / "decisions.json"
+            path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+                                        "rename_paths": {"app/demo": "app/showcase"}}), encoding="utf-8")
+            manifest = create_preview(root, base / "run", audit, load_decisions(path, audit))
+            (root / "app" / "demo" / "new-user-file.tsx").write_text("export default 1", encoding="utf-8")
+            with self.assertRaisesRegex(ApplyError, "rename source changed"):
+                apply_preview(root, base / "run", manifest.approval_token)
+
+    def test_apply_commits_text_rename_and_delete_with_recovery_artifacts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "app" / "examples").mkdir()
+            (root / "app" / "examples" / "page.tsx").write_text("export default null\n", encoding="utf-8")
+            audit = scan_project(root, ["Northstar", "demo"])
+            finding = next(item for item in audit.findings if item.relpath == "messages/en.json" and item.risk.value == "P3")
+            path = base / "decisions.json"
+            path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [{
+                "finding_id": finding.finding_id, "action": "replace", "replacement": "Your Product"}],
+                "delete_paths": ["app/examples"], "rename_paths": {"app/demo": "app/showcase"}}), encoding="utf-8")
+            manifest = create_preview(root, base / "run", audit, load_decisions(path, audit))
+            result = apply_preview(root, base / "run", manifest.approval_token)
+            self.assertIn("Your Product", (root / "messages/en.json").read_text(encoding="utf-8"))
+            self.assertFalse((root / "app" / "examples").exists())
+            self.assertTrue((root / "app" / "showcase" / "page.tsx").exists())
+            self.assertFalse((root / "app" / "demo").exists())
+            restore = json.loads(Path(result.restore_manifest).read_text(encoding="utf-8"))
+            self.assertTrue((Path(result.backup_root) / ".destarter-backup-owner.json").exists())
+            self.assertTrue(restore["operations"])
+            self.assertTrue((base / "run" / "reverse.diff").exists())
+
+    def test_apply_rolls_back_when_a_mutation_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            original = (root / "messages/en.json").read_bytes()
+            manifest = self._replacement_preview(root, base / "run")
+            with patch("destarter_lib.apply._write_file_atomic", side_effect=OSError("injected failure")):
+                with self.assertRaisesRegex(ApplyError, "rolled back"):
+                    apply_preview(root, base / "run", manifest.approval_token)
+            self.assertEqual((root / "messages/en.json").read_bytes(), original)
+
     def test_preview_changes_copy_but_not_source(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -287,6 +399,20 @@ class PreviewApplyTests(unittest.TestCase):
             "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
         }), encoding="utf-8")
         return path
+
+    def _replacement_preview(self, root: Path, run: Path):
+        audit = scan_project(root, ["Northstar"])
+        finding = next(
+            item for item in audit.findings
+            if item.relpath == "messages/en.json" and item.risk.value == "P3"
+        )
+        decisions_path = run.parent / "decisions.json"
+        decisions_path.write_text(json.dumps({
+            "brand_mode": "placeholder", "brand_profile": {}, "actions": [{
+                "finding_id": finding.finding_id, "action": "replace", "replacement": "Your Product",
+            }],
+        }), encoding="utf-8")
+        return create_preview(root, run, audit, load_decisions(decisions_path, audit))
 
 
 if __name__ == "__main__":
