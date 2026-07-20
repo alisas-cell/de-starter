@@ -13,6 +13,7 @@ from typing import Dict, Iterable, List, Mapping, Tuple
 from .files import IGNORED_DIRS, is_secret_name, read_text, sha256_file
 from .models import AuditResult, DecisionSet, PreviewManifest
 from .report import redact_evidence
+from .decisions import PLACEHOLDER_PROFILE
 
 
 _OWNER_FILE = ".destarter-preview-owner.json"
@@ -82,7 +83,7 @@ def _safe_file_records(root: Path, excluded_names: Iterable[str] = ()) -> List[D
         current = Path(directory)
         dirs[:] = [name for name in dirs if not _is_ignored_name(name) and not _is_secret_name(name)]
         for name in sorted(files):
-            if name in excluded or _is_secret_name(name):
+            if name in excluded or _is_ignored_name(name) or _is_secret_name(name):
                 continue
             path = current / name
             if path.is_symlink() or not path.is_file():
@@ -331,16 +332,28 @@ def create_preview(
 
     placeholders = []
     if decisions.brand_mode == "placeholder":
-        seen = set()
+        values = {}
         for field, value in sorted(decisions.brand_profile.items()):
+            values.setdefault(value, []).append(field)
+        for value, identifiers in sorted(values.items()):
+            locations = []
+            occurrences = 0
             for record in _safe_file_records(preview_root):
                 text = read_text(preview_root / str(record["relpath"]))
-                if text is not None and value in text:
-                    item = {"identifier": field, "value": "<placeholder>", "path": record["relpath"]}
-                    key = (value, record["relpath"])
-                    if key not in seen:
-                        seen.add(key)
-                        placeholders.append(item)
+                count = text.count(value) if text is not None else 0
+                if count:
+                    occurrences += count
+                    locations.append({"path": record["relpath"], "occurrences": count})
+            neutral = value if any(
+                value == known for known in PLACEHOLDER_PROFILE.values()
+            ) else "<custom placeholder>"
+            placeholders.append({
+                "value": neutral,
+                "identifiers": sorted(identifiers),
+                "status": "present" if occurrences else "absent",
+                "occurrences": occurrences,
+                "locations": locations,
+            })
     (run / "placeholders.json").write_text(json.dumps(placeholders, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     preview_tree_hash = _snapshot_hash(_safe_file_records(preview_root, {_OWNER_FILE}))

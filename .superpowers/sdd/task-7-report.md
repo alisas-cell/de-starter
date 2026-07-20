@@ -52,6 +52,38 @@ git diff --check
 passed
 ```
 
+## Final Important follow-up
+
+### RED
+
+Added regressions for a Git worktree/submodule-style root `.git` file and for
+placeholder inventory output. The former failed stale-audit because preview's
+safe inventory did not exclude ignored files; the latter lacked neutral values,
+aggregated identifiers, explicit status, and location counts.
+
+### GREEN
+
+Safe inventory now excludes ignored-name files as well as directories and
+secret paths, matching scanning and copying. Placeholder output is grouped by
+actual value and lists the safe neutral literal, all associated identifiers,
+`present`/`absent` status, deterministic locations, and occurrence count. A
+custom placeholder profile value remains redacted as `<custom placeholder>` so
+real-brand data cannot enter the artifact.
+
+```text
+python3 -m unittest tests.test_preview_apply -v
+14 tests passed
+
+python3 -m unittest discover -s tests -v
+52 tests passed
+
+python3 -m compileall -q skills/de-starter/scripts tests
+passed
+
+git diff --check
+passed
+```
+
 ## Final review remediation
 
 ### RED

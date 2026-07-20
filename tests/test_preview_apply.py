@@ -223,6 +223,40 @@ class PreviewApplyTests(unittest.TestCase):
             self.assertEqual(first.approval_token, second.approval_token)
             self.assertNotEqual(first.approval_token, kept.approval_token)
 
+    def test_preview_ignores_root_git_file_like_a_worktree(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / ".git").write_text("gitdir: /outside/worktree\n", encoding="utf-8")
+            audit = scan_project(root, ["Northstar"])
+            manifest = create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
+            self.assertFalse((Path(manifest.preview_root) / ".git").exists())
+
+    def test_placeholder_artifact_uses_neutral_values_and_aggregates_identifiers(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            target = root / "messages/en.json"
+            target.write_text('{"brand":"Northstar", "support":"hello@northstar.example"}\n', encoding="utf-8")
+            audit = scan_project(root, ["Northstar", "hello@northstar.example"])
+            brand = next(item for item in audit.findings if item.relpath == "messages/en.json" and item.matched == "Northstar")
+            support = next(item for item in audit.findings if item.relpath == "messages/en.json" and item.matched == "hello@northstar.example")
+            path = base / "decisions.json"
+            path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [
+                {"finding_id": brand.finding_id, "action": "replace", "replacement": "Your Product",
+                 "migration_plan": "display only", "rollback_plan": "restore display"},
+                {"finding_id": support.finding_id, "action": "replace", "replacement": "support@example.com",
+                 "migration_plan": "display only", "rollback_plan": "restore display"},
+            ]}), encoding="utf-8")
+            create_preview(root, base / "run", audit, load_decisions(path, audit))
+            payload = json.loads((base / "run" / "placeholders.json").read_text(encoding="utf-8"))
+            by_value = {item["value"]: item for item in payload}
+            self.assertEqual(by_value["Your Product"]["identifiers"], ["product_name", "short_name"])
+            self.assertEqual(by_value["Your Product"]["status"], "present")
+            self.assertIn("messages/en.json", [item["path"] for item in by_value["Your Product"]["locations"]])
+            self.assertGreaterEqual(by_value["Your Product"]["occurrences"], 1)
+            self.assertEqual(by_value["support@example.com"]["status"], "present")
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_preview_refuses_symlink_that_escapes_project(self) -> None:
         with TemporaryDirectory() as tmp:
