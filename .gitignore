@@ -1,2 +1,7 @@
 .worktrees/
 .superpowers/
+__pycache__/
+*.py[cod]
+.DS_Store
+.coverage
+.pytest_cache/
