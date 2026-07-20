@@ -1,0 +1,53 @@
+# Task 7 Report: Isolated Preview Generation
+
+## RED
+
+Created `tests/test_preview_apply.py` before the preview implementation.
+
+```text
+python3 -m unittest tests.test_preview_apply.PreviewApplyTests.test_preview_changes_copy_but_not_source -v
+ModuleNotFoundError: No module named 'destarter_lib.preview'
+```
+
+Added an additional manifest-binding regression after the first implementation
+pass. It failed with `KeyError: 'brand_mode'` until the artifact format bound
+brand mode and a redacted brand-result hash into the approval token.
+
+## GREEN
+
+Implemented `destarter_lib.preview.create_preview`. It copies only permitted
+source files into an external preview root, applies line/column-verified
+replacements in reverse order, and performs deletes and renames only in that
+copy. It emits `preview.md`, `preview.diff`, `binary-changes.json`,
+`placeholders.json`, and `manifest.json` with a deterministic 64-character
+approval token.
+
+Safety boundaries added beyond the baseline sketch:
+
+- resolves and requires project/run roots to be disjoint, with the run outside
+  the project;
+- rejects source symlinks, secret files, ignored metadata, and protected roots;
+- rejects delete/rename scopes that contain secret or ignored content even when
+  a caller constructs a `DecisionSet` outside the normal validator;
+- cleans a prior preview only when its project ownership marker matches, leaving
+  other run-directory content untouched;
+- binds source and preview hashes, delete/rename tree hashes, brand mode, and a
+  non-sensitive brand result hash into the manifest token;
+- inventories binary and text filesystem operations without writing profile or
+  secret-like replacement values into report artifacts.
+
+## Verification
+
+```text
+python3 -m unittest tests.test_preview_apply -v
+7 tests passed
+
+python3 -m unittest discover -s tests -v
+45 tests passed
+
+python3 -m compileall -q skills/de-starter/scripts tests
+passed
+
+git diff --check
+passed
+```

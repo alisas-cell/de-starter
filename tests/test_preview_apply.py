@@ -1,0 +1,181 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import json
+import os
+import sys
+import unittest
+
+from tests.support import SKILL_SCRIPTS, copy_fixture
+
+sys.path.insert(0, str(SKILL_SCRIPTS))
+
+from destarter_lib.decisions import load_decisions
+from destarter_lib.preview import create_preview
+from destarter_lib.scanner import scan_project
+
+
+class PreviewApplyTests(unittest.TestCase):
+    def test_preview_changes_copy_but_not_source(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            original = (root / "messages/en.json").read_text(encoding="utf-8")
+            audit = scan_project(root, ["Northstar"])
+            finding = next(
+                item for item in audit.findings
+                if item.relpath == "messages/en.json" and item.risk.value == "P3"
+            )
+            decisions_path = base / "decisions.json"
+            decisions_path.write_text(json.dumps({
+                "brand_mode": "placeholder",
+                "brand_profile": {},
+                "actions": [{
+                    "finding_id": finding.finding_id,
+                    "action": "replace",
+                    "replacement": "Your Product"
+                }]
+            }), encoding="utf-8")
+            manifest = create_preview(
+                root,
+                base / "run",
+                audit,
+                load_decisions(decisions_path, audit),
+            )
+            self.assertEqual((root / "messages/en.json").read_text(encoding="utf-8"), original)
+            preview = Path(manifest.preview_root) / "messages/en.json"
+            self.assertIn("Your Product", preview.read_text(encoding="utf-8"))
+            self.assertTrue((base / "run" / "preview.diff").exists())
+            self.assertEqual(len(manifest.approval_token), 64)
+
+    def test_preview_replaces_only_the_approved_occurrence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            target = root / "messages/en.json"
+            target.write_text(
+                '{"first":"Northstar","second":"Northstar"}\n',
+                encoding="utf-8",
+            )
+            audit = scan_project(root, ["Northstar"])
+            findings = [
+                item for item in audit.findings
+                if item.relpath == "messages/en.json"
+            ]
+            decisions_path = base / "decisions.json"
+            decisions_path.write_text(json.dumps({
+                "brand_mode": "placeholder",
+                "brand_profile": {},
+                "actions": [{
+                    "finding_id": findings[0].finding_id,
+                    "action": "replace",
+                    "replacement": "Your Product"
+                }]
+            }), encoding="utf-8")
+            manifest = create_preview(
+                root,
+                base / "run",
+                audit,
+                load_decisions(decisions_path, audit),
+            )
+            rendered = (
+                Path(manifest.preview_root) / "messages/en.json"
+            ).read_text(encoding="utf-8")
+            self.assertEqual(rendered.count("Your Product"), 1)
+            self.assertEqual(rendered.count("Northstar"), 1)
+
+    def test_preview_renames_only_inside_the_copy(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            audit = scan_project(root, ["Northstar"])
+            decisions_path = base / "decisions.json"
+            decisions_path.write_text(json.dumps({
+                "brand_mode": "placeholder",
+                "brand_profile": {},
+                "actions": [],
+                "rename_paths": {"app/demo": "app/showcase"}
+            }), encoding="utf-8")
+            manifest = create_preview(
+                root,
+                base / "run",
+                audit,
+                load_decisions(decisions_path, audit),
+            )
+            self.assertTrue((root / "app" / "demo" / "page.tsx").exists())
+            self.assertFalse((root / "app" / "showcase").exists())
+            self.assertTrue(
+                (Path(manifest.preview_root) / "app" / "showcase" / "page.tsx").exists()
+            )
+            self.assertEqual(manifest.renamed_paths, {"app/demo": "app/showcase"})
+
+    def test_preview_refuses_delete_or_rename_that_contains_secret_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "app" / "demo" / ".env").write_text(
+                "TOKEN=live-secret",
+                encoding="utf-8",
+            )
+            audit = scan_project(root, ["Northstar"])
+            decisions_path = base / "decisions.json"
+            decisions_path.write_text(json.dumps({
+                "brand_mode": "placeholder",
+                "brand_profile": {},
+                "actions": [],
+                "delete_paths": ["app/demo"]
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "secret file"):
+                create_preview(
+                    root,
+                    base / "run",
+                    audit,
+                    load_decisions(decisions_path, audit),
+                )
+
+    def test_preview_rejects_run_directory_inside_project(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            audit = scan_project(root, ["Northstar"])
+            decisions = load_decisions(self._decisions(base), audit)
+            with self.assertRaisesRegex(ValueError, "outside project"):
+                create_preview(root, root / ".preview-run", audit, decisions)
+
+    def test_manifest_binds_brand_mode_and_result_without_profile_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            audit = scan_project(root, ["Northstar"])
+            decisions_path = self._decisions(base)
+            manifest = create_preview(
+                root, base / "run", audit, load_decisions(decisions_path, audit)
+            )
+            payload = json.loads((base / "run" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["brand_mode"], "placeholder")
+            self.assertEqual(len(payload["brand_result_hash"]), 64)
+            self.assertNotIn("Your Product", (base / "run" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest.approval_token, payload["approval_token"])
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_preview_refuses_symlink_that_escapes_project(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            outside = base / "outside.txt"
+            outside.write_text("outside", encoding="utf-8")
+            (root / "escaped-link").symlink_to(outside)
+            audit = scan_project(root, ["Northstar"])
+            decisions = load_decisions(self._decisions(base), audit)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                create_preview(root, base / "run", audit, decisions)
+
+    def _decisions(self, base: Path) -> Path:
+        path = base / "decisions.json"
+        path.write_text(json.dumps({
+            "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+        }), encoding="utf-8")
+        return path
+
+
+if __name__ == "__main__":
+    unittest.main()
