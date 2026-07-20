@@ -1,85 +1,42 @@
 ---
 name: de-starter
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+description: Use when taking ownership of a starter, boilerplate, template, SaaS kit, or cloned codebase that may still contain source branding, demo content, sample assets, repository links, placeholder metadata, or risky business identifiers.
 ---
 
-# De Starter
+# De-starter
 
-## Overview
+Safely convert a template-derived repository into an independently branded product. The real target is read-only through audit and external preview; show the report and current diff before edits.
 
-[TODO: 1-2 sentences explaining what this skill enables]
+## Runtime and setup
 
-## Structuring This Skill
+Use Python 3.9+ and the bundled CLI. v0.1 automated commands require macOS/Linux POSIX no-follow support; `apply` additionally requires the project and run directory on the same filesystem. Fail closed elsewhere: never substitute ad hoc edits or search-and-replace.
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+Set `SKILL_DIR` to this Skill folder. Use a real, project-sibling external run directory (for example, `../project-de-starter-run`): it is disjoint from the project while normally sharing its filesystem.
 
-**1. Workflow-Based** (best for sequential processes)
-- Works well when there are clear step-by-step procedures
-- Example: DOCX skill with "Workflow Decision Tree" -> "Reading" -> "Creating" -> "Editing"
-- Structure: ## Overview -> ## Workflow Decision Tree -> ## Step 1 -> ## Step 2...
+```bash
+python3 "$SKILL_DIR/scripts/destarter.py" --help
+python3 "$SKILL_DIR/scripts/destarter.py" discover --project "$PROJECT" --run-dir "$RUN"
+```
 
-**2. Task-Based** (best for tool collections)
-- Works well when the skill offers different operations/capabilities
-- Example: PDF skill with "Quick Start" -> "Merge PDFs" -> "Split PDFs" -> "Extract Text"
-- Structure: ## Overview -> ## Quick Start -> ## Task Category 1 -> ## Task Category 2...
+## Required workflow
 
-**3. Reference/Guidelines** (best for standards or specifications)
-- Works well for brand guidelines, coding standards, or requirements
-- Example: Brand styling with "Brand Guidelines" -> "Colors" -> "Typography" -> "Features"
-- Structure: ## Overview -> ## Guidelines -> ## Specifications -> ## Usage...
+1. Read `discovery.json`. Recommend high-confidence source-identity candidates; ask only when candidates are ambiguous. Confirmed source terms may be confirmed together with the first risk/P2 gate.
+2. Present both brand choices: pause for a complete real profile, or choose the exact neutral placeholders for later replacement. Read [brand profile](references/brand-profile.md). Never invent a real identity.
+3. Run `audit` with a canonical `source-config.json`. Read [risk rules](references/risk-rules.md). Present protections and sensible P2 category recommendations, combine ordinary questions, and record every user decision. This is approval gate one.
+4. Write `decisions.json` in `$RUN`. P0 never enters actions. P1 stays retained unless its action has explicit migration and rollback text. Deletions always need explicit confirmation.
+5. Run `preview`. Show `audit.md`, `preview.diff`, `binary-changes.json`, `placeholders.json`, protected/retained items, validation commands, unresolved work, and the exact current approval token. Stop: this is approval gate two.
+6. Apply only after explicit approval of that exact preview and token. The CLI checks current hashes and rejects stale artifacts. Run detected validation commands, then `verify` with the same source config.
+7. Report results using [the report contract](references/report-contract.md). Exit code 3 from `verify` means findings remain: report them; never hide or reinterpret it as success.
 
-**4. Capabilities-Based** (best for integrated systems)
-- Works well when the skill provides multiple interrelated features
-- Example: Product Management with "Core Capabilities" -> numbered capability list
-- Structure: ## Overview -> ## Core Capabilities -> ### 1. Feature -> ### 2. Feature...
+```bash
+python3 "$SKILL_DIR/scripts/destarter.py" audit --project "$PROJECT" --run-dir "$RUN" --source-config "$RUN/source-config.json"
+python3 "$SKILL_DIR/scripts/destarter.py" preview --project "$PROJECT" --run-dir "$RUN" --decisions "$RUN/decisions.json"
+python3 "$SKILL_DIR/scripts/destarter.py" apply --project "$PROJECT" --run-dir "$RUN" --approval-token "$TOKEN"
+python3 "$SKILL_DIR/scripts/destarter.py" verify --project "$PROJECT" --run-dir "$RUN" --source-config "$RUN/source-config.json"
+```
 
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
+## Mandatory stops
 
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
+Stop without editing when source identity is ambiguous, the user has not selected a brand mode, license obligations are unclear, a P1 plan is incomplete, the scanner/preview/hash/backup/redaction check fails, files change after preview, or the platform/filesystem requirements are unmet. Preserve LICENSE obligations. Do not continue with direct edits.
 
-## [TODO: Replace with the first main section based on chosen structure]
-
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
-
-## Resources (optional)
-
-Create only the resource directories this skill actually needs. Delete this section if no resources are required.
-
-### scripts/
-Executable code (Python/Bash/etc.) that can be run directly to perform specific operations.
-
-**Examples from other skills:**
-- PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
-- DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
-
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
-
-**Note:** Scripts may be executed without loading into context, but can still be read by Codex for patching or environment adjustments.
-
-### references/
-Documentation and reference material intended to be loaded into context to inform Codex's process and thinking.
-
-**Examples from other skills:**
-- Product management: `communication.md`, `context_building.md` - detailed workflow guides
-- BigQuery: API reference documentation and query examples
-- Finance: Schema documentation, company policies
-
-**Appropriate for:** In-depth documentation, API references, database schemas, comprehensive guides, or any detailed information that Codex should reference while working.
-
-### assets/
-Files not intended to be loaded into context, but rather used within the output Codex produces.
-
-**Examples from other skills:**
-- Brand styling: PowerPoint template files (.pptx), logo files
-- Frontend builder: HTML/React boilerplate project directories
-- Typography: Font files (.ttf, .woff2)
-
-**Appropriate for:** Templates, boilerplate code, document templates, images, icons, fonts, or any files meant to be copied or used in the final output.
-
----
-
-**Not every skill requires all three types of resources.**
+Respond in the user's language. Redact secrets, and never put private purchased source code or assets in public examples.
