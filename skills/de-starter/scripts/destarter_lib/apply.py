@@ -49,7 +49,7 @@ def _load_json(path: Path) -> Mapping[str, object]:
         return result
     try:
         value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
         _fail("invalid preview manifest: {}".format(error))
     if not isinstance(value, dict):
         _fail("invalid preview manifest")
@@ -542,6 +542,9 @@ def apply_preview(project_root: Path, run_dir: Path, approval_token: str) -> App
     root, run = project_root.resolve(), run_dir.resolve()
     if not root.is_dir() or run.is_symlink() or _contains(root, run) or _contains(run, root):
         _fail("project and run directories must be disjoint real directories")
+    _fd_support()
+    if root.stat().st_dev != run.stat().st_dev:
+        _fail("project and run directories must be on the same filesystem for safe apply")
     manifest, raw = _load_manifest(run)
     preview = _verify_approval(root, run, manifest, raw, approval_token)
     # Preflight all destinations before creating the backup or changing source.
