@@ -2357,7 +2357,10 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertEqual(cleanup["source_inode"], initial.st_ino)
         self.assertTrue(cleanup["source_was_empty"])
         self.assertTrue(cleanup["backup_empty"])
-        self.assertEqual(cleanup["restored_identity_guarantee"], "new-inode-not-guaranteed")
+        self.assertEqual(
+            cleanup["restored_identity_guarantee"],
+            "original-inode-not-guaranteed",
+        )
         backup = Path(cleanup["backup"])
         self.assertTrue(backup.is_dir())
         self.assertEqual(list(backup.iterdir()), [])
@@ -2826,6 +2829,123 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertFalse((run / "restore.json").exists())
         self.assertFalse((run / "reverse.diff").exists())
         self.assertTrue((run / "backup").is_dir())
+
+    def test_cleanup_forward_post_rename_state_read_failure_is_rolled_back(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_atomic = apply_module._atomic_rename_no_replace
+        original_state_at = apply_module._state_at
+        committed = []
+        failed = []
+
+        def mark_forward_commit(source, destination, **kwargs):
+            result = original_atomic(source, destination, **kwargs)
+            if source == "starter" and destination.startswith("cleanup-"):
+                committed.append(destination)
+            return result
+
+        def fail_first_post_commit_state(parent_fd, name):
+            if committed and not failed and name == committed[0]:
+                failed.append(True)
+                raise OSError("injected forward post-rename state read failure")
+            return original_state_at(parent_fd, name)
+
+        with patch(
+            "destarter_lib.apply._atomic_rename_no_replace",
+            side_effect=mark_forward_commit,
+        ), patch(
+            "destarter_lib.apply._state_at",
+            side_effect=fail_first_post_commit_state,
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back") as caught:
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(committed)
+        self.assertTrue(failed)
+        self.assertNotIn("before mutation", str(caught.exception))
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertTrue((run / "backup").is_dir())
+        self.assertEqual(list((run / "backup/original").iterdir()), [])
+
+    def test_cleanup_reverse_post_rename_state_read_reports_consumed_backup(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_atomic = apply_module._atomic_rename_no_replace
+        original_state_at = apply_module._state_at
+        restore_committed = []
+        failed = []
+
+        def mark_restore_commit(source, destination, **kwargs):
+            result = original_atomic(source, destination, **kwargs)
+            if source.startswith("cleanup-") and destination == "starter":
+                restore_committed.append(True)
+            return result
+
+        def fail_first_post_restore_state(parent_fd, name):
+            if restore_committed and not failed and name == "starter":
+                failed.append(True)
+                raise OSError("injected reverse post-rename state read failure")
+            return original_state_at(parent_fd, name)
+
+        with patch(
+            "destarter_lib.apply._atomic_rename_no_replace",
+            side_effect=mark_restore_commit,
+        ), patch(
+            "destarter_lib.apply._state_at",
+            side_effect=fail_first_post_restore_state,
+        ), patch(
+            "destarter_lib.apply._write_artifact_atomic",
+            side_effect=OSError("force rollback after cleanup commit"),
+        ):
+            with self.assertRaisesRegex(
+                ApplyError, "restore committed.*backup was consumed",
+            ) as caught:
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(restore_committed)
+        self.assertTrue(failed)
+        self.assertNotIn("backup preserved", str(caught.exception))
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertEqual(list((run / "backup/original").iterdir()), [])
+
+    def test_cleanup_post_publish_state_read_failure_removes_owned_restore_artifact(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_state_at = apply_module._state_at
+        failed = []
+
+        def fail_first_post_publish_state(parent_fd, name):
+            if not failed and name == "restore.json":
+                failed.append(True)
+                raise OSError("injected post-publish state read failure")
+            return original_state_at(parent_fd, name)
+
+        with patch(
+            "destarter_lib.apply._state_at",
+            side_effect=fail_first_post_publish_state,
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(failed)
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertFalse((run / "restore.json").exists())
+        self.assertFalse((run / "reverse.diff").exists())
 
     def test_apply_strictly_loads_cleanup_manifest_fields_before_backup(self) -> None:
         cases = (

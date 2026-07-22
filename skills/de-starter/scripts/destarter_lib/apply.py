@@ -99,7 +99,9 @@ class CleanupDirectory:
     mode: int
     state_sha256: str
     backup_name: str
+    move_committed: bool = False
     moved_empty: Optional[ObjectState] = None
+    restore_committed: bool = False
 
 
 @dataclass(frozen=True)
@@ -1745,8 +1747,11 @@ def _move_cleanup_directories(transaction: Transaction) -> None:
                 src_dir_fd=cleanup.parent_fd,
                 dst_dir_fd=transaction.original_fd,
             )
+            # The namespace mutation is committed when the syscall returns.
+            # Record ownership before any verification that can fail.
+            cleanup.move_committed = True
+            cleanup.moved_empty = empty_state
             moved = _state_at(transaction.original_fd, cleanup.backup_name)
-            cleanup.moved_empty = moved
             if moved != empty_state:
                 _fail(
                     "cleanup directory changed at atomic move boundary: {}".format(
@@ -1781,8 +1786,14 @@ def _verify_backups(transaction: Transaction) -> None:
         if actual != original.moved or actual != original.expected:
             _fail("external backup verification failed: {}".format(original.relpath))
     for cleanup in transaction.cleanup_directories:
-        if cleanup.moved_empty is None:
+        if not cleanup.move_committed:
             continue
+        if cleanup.moved_empty is None:
+            _fail(
+                "committed cleanup move has no owned state: {}".format(
+                    cleanup.relpath
+                )
+            )
         actual = _state_at(transaction.original_fd, cleanup.backup_name)
         if actual != cleanup.moved_empty:
             _fail(
@@ -1836,7 +1847,7 @@ def _verify_success(transaction: Transaction) -> None:
                 "{}".format(output.relpath)
             )
     for cleanup in transaction.cleanup_directories:
-        if cleanup.moved_empty is None:
+        if not cleanup.move_committed or cleanup.moved_empty is None:
             _fail(
                 "approved cleanup directory was not moved: {}".format(
                     cleanup.relpath
@@ -1874,6 +1885,7 @@ def _write_artifact_atomic(
             view = view[written:]
         os.lseek(descriptor, 0, os.SEEK_SET)
         expected = _state_from_open(descriptor)
+        artifact = Artifact(name, expected)
         os.link(
             temporary,
             name,
@@ -1881,14 +1893,15 @@ def _write_artifact_atomic(
             dst_dir_fd=transaction.run_fd,
             follow_symlinks=False,
         )
+        # The public name now owns the same inode as the temporary file.
+        # Register it before any post-publish read that can fail.
+        transaction.artifacts.append(artifact)
         published = _state_at(transaction.run_fd, name)
         if published != expected:
             _fail(
                 "successful apply artifact was replaced before ownership "
                 "capture: {}".format(name)
             )
-        artifact = Artifact(name, expected)
-        transaction.artifacts.append(artifact)
         return artifact
     finally:
         os.close(descriptor)
@@ -2167,14 +2180,31 @@ def _restore_cleanup_no_replace(
                 "cleanup directory {} no-replace restore failed; target and "
                 "backup preserved: {}".format(cleanup.relpath, error)
             )
-        restored = _state_at(cleanup.parent_fd, cleanup.name)
+        # The backup name was consumed when the syscall returned. Capture the
+        # phase transition before any post-restore verification can fail.
+        cleanup.restore_committed = True
+        try:
+            restored = _state_at(cleanup.parent_fd, cleanup.name)
+        except Exception as error:
+            return (
+                "cleanup directory {} restore committed but post-restore "
+                "verification failed; restored entry preserved and backup "
+                "was consumed: {}".format(cleanup.relpath, error)
+            )
         if restored != backup:
             return (
-                "cleanup directory {} changed during restore; restored entry "
-                "preserved for recovery".format(cleanup.relpath)
+                "cleanup directory {} restore committed but restored state "
+                "changed; restored entry preserved and backup was consumed"
+                .format(cleanup.relpath)
             )
         return None
     except Exception as error:
+        if cleanup.restore_committed:
+            return (
+                "cleanup directory {} restore committed but verification "
+                "failed; restored entry preserved and backup was consumed: "
+                "{}".format(cleanup.relpath, error)
+            )
         return (
             "cleanup directory {} no-replace restore failed; backup "
             "preserved: {}".format(cleanup.relpath, error)
@@ -2258,7 +2288,13 @@ def _rollback(transaction: Transaction) -> List[str]:
             errors.append(error)
     # Cleanup parents must exist again before their child originals can return.
     for cleanup in transaction.cleanup_directories:
+        if not cleanup.move_committed:
+            continue
         if cleanup.moved_empty is None:
+            errors.append(
+                "cleanup move {} committed without an owned state; external "
+                "backup preserved for recovery".format(cleanup.relpath)
+            )
             continue
         try:
             backup = _state_at(
@@ -2388,7 +2424,7 @@ def _restore_payload(transaction: Transaction) -> str:
             ]["is_empty"],
             "backup_identity": list(moved.identity) if moved else None,
             "backup_empty": bool(moved is not None and moved.kind == "dir"),
-            "restored_identity_guarantee": "new-inode-not-guaranteed",
+            "restored_identity_guarantee": "original-inode-not-guaranteed",
         })
     restoration_order = [
         {"kind": "cleanup-directory", "path": item.relpath}
@@ -2503,7 +2539,7 @@ def apply_preview(
             ) or any(
                 item.created is not None for item in transaction.outputs
             ) or any(
-                item.moved_empty is not None
+                item.move_committed
                 for item in transaction.cleanup_directories
             ) or bool(transaction.created_parents) or bool(transaction.artifacts)
             if not mutated:

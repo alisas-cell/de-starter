@@ -146,3 +146,49 @@ OK
 Known limitation: the v0.1 safety contract depends on the existing macOS/Linux
 atomic no-replace primitive. An unsupported platform fails closed rather than
 falling back to an overwriting rename.
+
+## Independent Review Fixes
+
+The first independent review requested three changes: one Critical atomic
+phase-accounting fix, one Important artifact-ownership fix, and one Minor
+evidence-label clarification.
+
+### RED
+
+Three deterministic fault-injection tests were added before the fixes:
+
+1. The first backup-state read after a successful forward cleanup rename
+   failed. The old code incorrectly reported `before mutation`, left the
+   source path absent, and did not enter rollback.
+2. The first source-state read after a successful reverse cleanup rename
+   failed. The old code incorrectly said the backup was preserved even though
+   the rename had consumed its backup name.
+3. The first state read after publishing `restore.json` failed. The old code
+   left the published restore file behind because artifact ownership had not
+   yet been registered.
+
+The evidence-label assertion also failed on the former ambiguous
+`new-inode-not-guaranteed` value.
+
+### GREEN
+
+- `CleanupDirectory.move_committed` is now set immediately after the forward
+  atomic syscall returns, with the already-proved empty state captured before
+  any fallible post-move read.
+- `CleanupDirectory.restore_committed` is now set immediately after the
+  reverse atomic syscall returns. A subsequent verification failure reports
+  that the restored entry is preserved and the backup name was consumed; it
+  no longer claims the backup remains.
+- A successful artifact link is added to `transaction.artifacts` before its
+  first post-publish state read. Rollback removes it only when it still matches
+  the precomputed inode/state and preserves a replacement.
+- The recovery label is now `original-inode-not-guaranteed`.
+
+Post-review verification:
+
+```text
+PreviewApplyTests: 103/103 — OK (`-W error::ResourceWarning`)
+Full suite: 187/187 — OK (`-W error::ResourceWarning`)
+compileall: OK
+git diff --check: OK
+```
