@@ -115,22 +115,29 @@ class CliEndToEndTests(unittest.TestCase):
                     "reason": "Remove the approved testimonial import and usage",
                 }],
             })
+            page_path = root / "app" / "page.tsx"
+            testimonial_path = root / "components" / "testimonials.tsx"
+            page_before = page_path.read_bytes()
+            testimonial_before = testimonial_path.read_bytes()
             license_before = license_path.read_text(encoding="utf-8")
             p1_before = p1_path.read_text(encoding="utf-8")
 
             preview = self.run_cli("preview", "--project", str(root), "--run-dir", str(run), "--decisions", str(decisions))
             self.assertEqual(preview.returncode, 0, preview.stderr)
             token = preview.stdout.strip().splitlines()[-1]
+            self.assertEqual(page_path.read_bytes(), page_before)
+            self.assertTrue(testimonial_path.exists())
+            self.assertEqual(testimonial_path.read_bytes(), testimonial_before)
             self.assertFalse((run / "preview" / "components" / "testimonials.tsx").exists())
             preview_page = (run / "preview" / "app" / "page.tsx").read_text(encoding="utf-8")
             self.assertNotIn("Testimonials", preview_page)
-            self.assertEqual((root / "app" / "page.tsx").read_text(encoding="utf-8").splitlines()[0], "import { Testimonials } from '../components/testimonials';")
+            self.assertEqual(page_path.read_text(encoding="utf-8").splitlines()[0], "import { Testimonials } from '../components/testimonials';")
             self.assertTrue((run / "semantic-edits.json").is_file())
 
             applied = self.run_cli("apply", "--project", str(root), "--run-dir", str(run), "--approval-token", token)
             self.assertEqual(applied.returncode, 0, applied.stderr)
-            self.assertFalse((root / "components" / "testimonials.tsx").exists())
-            page_after = (root / "app" / "page.tsx").read_text(encoding="utf-8")
+            self.assertFalse(testimonial_path.exists())
+            page_after = page_path.read_text(encoding="utf-8")
             self.assertNotIn("Testimonials", page_after)
             self.assertEqual(license_path.read_text(encoding="utf-8"), license_before)
             self.assertEqual(p1_path.read_text(encoding="utf-8"), p1_before)
