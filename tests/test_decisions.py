@@ -466,6 +466,37 @@ class DecisionTests(unittest.TestCase):
         }), self.audit)
         self.assertEqual(decisions.delete_paths, ["app/demo"])
 
+    def test_rename_allows_audited_nested_p2_directory_root(self) -> None:
+        (self.root / "public/demo/gallery").mkdir(parents=True)
+        (self.root / "public/demo/video").mkdir(parents=True)
+        (self.root / "public/demo/gallery/cover.png").write_bytes(b"cover")
+        (self.root / "public/demo/video/clip.mp4").write_bytes(b"clip")
+        audit = scan_project(self.root, ["Northstar", "starter_monthly"])
+
+        decisions = load_decisions(self.write({
+            "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+            "rename_paths": {"public/demo": "public/product"},
+        }), audit)
+
+        self.assertEqual(decisions.rename_paths, {"public/demo": "public/product"})
+
+    def test_rename_allows_audited_nested_path_finding_root(self) -> None:
+        (self.root / "assets/Northstar/gallery").mkdir(parents=True)
+        (self.root / "assets/Northstar/video").mkdir(parents=True)
+        (self.root / "assets/Northstar/gallery/cover.bin").write_bytes(b"cover")
+        (self.root / "assets/Northstar/video/clip.bin").write_bytes(b"clip")
+        audit = scan_project(self.root, ["Northstar", "starter_monthly"])
+
+        decisions = load_decisions(self.write({
+            "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+            "rename_paths": {"assets/Northstar": "assets/product"},
+        }), audit)
+
+        self.assertEqual(
+            decisions.rename_paths,
+            {"assets/Northstar": "assets/product"},
+        )
+
     def test_rename_destinations_cannot_target_protected_roots(self) -> None:
         for destination in [".git/destarter", "docs/NOTICE", "node_modules/output", "build/output", ".cache/output"]:
             with self.subTest(destination=destination):

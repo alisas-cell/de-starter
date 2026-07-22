@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from .files import IGNORED_DIRS, is_secret_name
 from .models import AuditResult, DecisionAction, DecisionSet, Finding, RiskLevel, TextEdit
+from .scanner import path_is_p2
 
 
 REAL_BRAND_FIELDS = {
@@ -100,6 +101,21 @@ def _findings_under(audit: AuditResult, path: str) -> Iterable[Finding]:
     return (item for item in audit.findings if _contains(path, item.relpath))
 
 
+def _path_finding_authorizes_root(audit: AuditResult, path: str) -> bool:
+    for item in _findings_under(audit, path):
+        if item.line != 0 or item.category != "file-or-directory-name":
+            continue
+        start = item.column - 1
+        end = start + len(item.matched)
+        if (
+            start >= 0
+            and end <= len(path)
+            and path[start:end].casefold() == item.matched.casefold()
+        ):
+            return True
+    return False
+
+
 def _validate_protected_paths(audit: AuditResult, paths: Iterable[str], operation: str) -> None:
     for path in paths:
         protected = sorted(
@@ -164,6 +180,10 @@ def _validate_audited_paths(audit: AuditResult, paths: Iterable[str], operation:
                 parent = item.relpath.rpartition("/")[0]
                 if parent:
                     authorized_roots.add(parent)
+        if operation == "rename" and (
+            path_is_p2(path) or _path_finding_authorizes_root(audit, path)
+        ):
+            authorized_roots.add(path)
         if path not in authorized_roots:
             raise DecisionError(message + ": " + path)
 

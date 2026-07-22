@@ -33,7 +33,7 @@ P2_MEDIA_EXTENSIONS = {
 }
 
 
-def _path_is_p2(relpath: str) -> bool:
+def path_is_p2(relpath: str) -> bool:
     path = Path(relpath)
     if (
         path.suffix.casefold() in P2_MEDIA_EXTENSIONS
@@ -54,7 +54,7 @@ def _risk(relpath: str, line_text: str) -> Tuple[RiskLevel, str]:
         return RiskLevel.P0, "legal-or-copyright"
     if any(pattern.search(line_text) for pattern in P1_PATTERNS):
         return RiskLevel.P1, "possible-persisted-or-public-identifier"
-    if _path_is_p2(relpath):
+    if path_is_p2(relpath):
         return RiskLevel.P2, "user-decides-sample-content"
     return RiskLevel.P3, "display-or-metadata"
 
@@ -84,7 +84,7 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
     findings = []
 
     for record in files:
-        path_is_p2 = _path_is_p2(record.relpath)
+        path_is_p2_scope = path_is_p2(record.relpath)
 
         for term in terms:
             for match in re.finditer(re.escape(term), record.relpath, re.I):
@@ -108,7 +108,7 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
                     )
                 )
 
-        if path_is_p2:
+        if path_is_p2_scope:
             raw_id = "{}:path-inventory".format(record.relpath)
             findings.append(
                 Finding(
