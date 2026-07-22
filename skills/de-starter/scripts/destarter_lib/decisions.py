@@ -26,6 +26,7 @@ PLACEHOLDER_PROFILE = {
 }
 _TOP_LEVEL_KEYS = {
     "brand_mode", "brand_profile", "actions", "delete_paths", "rename_paths", "text_edits",
+    "cleanup_empty_dirs",
 }
 _ACTION_KEYS = {"finding_id", "action", "replacement", "migration_plan", "rollback_plan"}
 _TEXT_EDIT_KEYS = {
@@ -186,6 +187,79 @@ def _validate_audited_paths(audit: AuditResult, paths: Iterable[str], operation:
             authorized_roots.add(path)
         if path not in authorized_roots:
             raise DecisionError(message + ": " + path)
+
+
+def _validate_current_cleanup_directory(project_root: Path, relpath: str) -> None:
+    if project_root.is_symlink() or not project_root.is_dir():
+        raise DecisionError("cleanup_empty_dirs project_root must be a real directory")
+    current = project_root
+    for part in relpath.split("/"):
+        current = current / part
+        if current.is_symlink():
+            raise DecisionError("cleanup_empty_dirs path cannot be a symlink: {}".format(relpath))
+        if not current.is_dir():
+            raise DecisionError("cleanup_empty_dirs path must be a current directory: {}".format(relpath))
+
+
+def _validate_cleanup_empty_dirs(
+    raw_cleanup: object,
+    audit: AuditResult,
+    project_root: Optional[Path],
+) -> List[str]:
+    if not isinstance(raw_cleanup, list):
+        raise DecisionError("cleanup_empty_dirs must be a list")
+    cleanup_paths = [_project_path(value, "cleanup_empty_dirs") for value in raw_cleanup]
+    if len(set(cleanup_paths)) != len(cleanup_paths):
+        raise DecisionError("cleanup_empty_dirs cannot contain duplicates")
+    if any(
+        _contains(first, second)
+        for first in cleanup_paths
+        for second in cleanup_paths
+        if first != second
+    ):
+        raise DecisionError("cleanup_empty_dirs cannot overlap")
+    _validate_invariant_paths(cleanup_paths, "cleanup_empty_dirs")
+
+    directories = {item.relpath: item for item in audit.directories}
+    if len(directories) != len(audit.directories):
+        raise DecisionError("audit contains duplicate directory records")
+    directory_findings = {item.finding_id: item for item in audit.directory_findings}
+    if len(directory_findings) != len(audit.directory_findings):
+        raise DecisionError("audit contains duplicate directory finding IDs")
+
+    for path in cleanup_paths:
+        directory = directories.get(path)
+        if directory is None:
+            raise DecisionError(
+                "cleanup_empty_dirs path must be an exact audited directory: {}".format(path)
+            )
+        exact_findings = [
+            item for item in audit.directory_findings
+            if (
+                item.relpath == path
+                and item.line == 0
+                and item.category == "directory-name"
+                and item.sha256 == directory.state_sha256
+            )
+        ]
+        if not exact_findings:
+            raise DecisionError(
+                "cleanup_empty_dirs path requires an exact directory finding: {}".format(path)
+            )
+        protected = sorted(
+            item.finding_id
+            for item in list(audit.findings) + list(audit.directory_findings)
+            if _contains(path, item.relpath) and item.risk in {RiskLevel.P0, RiskLevel.P1}
+        )
+        if protected:
+            raise DecisionError(
+                "cleanup_empty_dirs path contains protected finding: {}".format(
+                    ", ".join(protected)
+                )
+            )
+        if project_root is not None:
+            _validate_current_cleanup_directory(project_root, path)
+    return cleanup_paths
 
 
 def _reject_duplicate_keys(pairs: List[object]) -> Dict[str, object]:
@@ -401,6 +475,9 @@ def load_decisions(
     if len(findings) != len(audit.findings):
         raise DecisionError("audit contains duplicate finding IDs")
     actions = _validate_actions(payload.get("actions", []), findings)
+    cleanup_empty_dirs = _validate_cleanup_empty_dirs(
+        payload.get("cleanup_empty_dirs", []), audit, project_root
+    )
 
     raw_deletes = payload.get("delete_paths", [])
     if not isinstance(raw_deletes, list):
@@ -450,6 +527,17 @@ def load_decisions(
         ):
             raise DecisionError("rename_paths destinations cannot overlap")
 
+    for cleanup in cleanup_empty_dirs:
+        if any(_contains(source, cleanup) for source in delete_paths):
+            raise DecisionError("cleanup_empty_dirs cannot overlap delete_paths sources")
+        if any(_contains(source, cleanup) for source in rename_paths):
+            raise DecisionError("cleanup_empty_dirs cannot overlap rename_paths sources")
+        if any(
+            _contains(destination, cleanup) or _contains(cleanup, destination)
+            for destination in destinations
+        ):
+            raise DecisionError("cleanup_empty_dirs cannot overlap rename_paths destinations")
+
     _validate_invariant_paths(delete_paths, "delete")
     _validate_invariant_paths(rename_paths, "rename")
     _validate_invariant_paths(destinations, "rename destination")
@@ -460,4 +548,6 @@ def load_decisions(
     text_edits = _validate_text_edits(
         payload.get("text_edits", []), audit, actions, project_root
     )
-    return DecisionSet(mode, profile, actions, delete_paths, rename_paths, text_edits)
+    return DecisionSet(
+        mode, profile, actions, delete_paths, rename_paths, text_edits, cleanup_empty_dirs,
+    )

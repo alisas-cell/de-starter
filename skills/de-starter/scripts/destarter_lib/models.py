@@ -104,6 +104,7 @@ class DecisionSet:
     delete_paths: List[str] = field(default_factory=list)
     rename_paths: Dict[str, str] = field(default_factory=dict)
     text_edits: List[TextEdit] = field(default_factory=list)
+    cleanup_empty_dirs: List[str] = field(default_factory=list)
 
 
 @dataclass

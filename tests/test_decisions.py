@@ -10,7 +10,7 @@ from tests.support import SKILL_SCRIPTS, copy_fixture
 sys.path.insert(0, str(SKILL_SCRIPTS))
 
 from destarter_lib.decisions import DecisionError, load_decisions
-from destarter_lib.models import RiskLevel
+from destarter_lib.models import Finding, RiskLevel
 from destarter_lib.scanner import scan_project
 
 
@@ -56,6 +56,191 @@ class DecisionTests(unittest.TestCase):
         payload = self.base_payload()
         payload["text_edits"] = [edit]
         return payload
+
+    def cleanup_payload(self, *paths: str, **changes) -> dict:
+        payload = self.base_payload()
+        payload["cleanup_empty_dirs"] = list(paths)
+        payload.update(changes)
+        return payload
+
+    def audit_cleanup_directory(self, relpath: str, *, non_empty: bool = False):
+        directory = self.root / relpath
+        directory.mkdir(parents=True)
+        if non_empty:
+            (directory / "child.txt").write_text("child\n", encoding="utf-8")
+        return scan_project(self.root, ["starter"])
+
+    def test_cleanup_empty_dirs_is_compatible_and_requires_exact_directory_authority(self) -> None:
+        self.assertEqual(load_decisions(self.write(self.base_payload()), self.audit).cleanup_empty_dirs, [])
+
+        audit = self.audit_cleanup_directory("public/starter")
+        decisions = load_decisions(
+            self.write(self.cleanup_payload("public/starter")), audit, self.root,
+        )
+        self.assertEqual(decisions.cleanup_empty_dirs, ["public/starter"])
+
+        audit = self.audit_cleanup_directory("public/nonempty-starter", non_empty=True)
+        decisions = load_decisions(
+            self.write(self.cleanup_payload("public/nonempty-starter")), audit, self.root,
+        )
+        self.assertEqual(decisions.cleanup_empty_dirs, ["public/nonempty-starter"])
+
+    def test_cleanup_empty_dirs_rejects_nonexact_or_protected_paths(self) -> None:
+        audit = self.audit_cleanup_directory("public/starter")
+        ordinary = self.root / "public/ordinary"
+        ordinary.mkdir()
+        audit = scan_project(self.root, ["starter"])
+        for path in (
+            "public/starter", "public//starter", ".", "/outside", "../outside",
+            "public/ordinary", "node_modules/starter", ".env/starter", "LICENSE/starter",
+            "missing/starter",
+        ):
+            with self.subTest(path=path):
+                paths = ["public/starter", path]
+                with self.assertRaises(DecisionError):
+                    load_decisions(self.write(self.cleanup_payload(*paths)), audit, self.root)
+
+    def test_cleanup_empty_dirs_rejects_changed_symlink_and_file(self) -> None:
+        audit = self.audit_cleanup_directory("public/starter")
+        starter = self.root / "public/starter"
+        starter.rmdir()
+        target = self.root / "outside"
+        target.mkdir()
+        starter.symlink_to(target, target_is_directory=True)
+        with self.assertRaisesRegex(DecisionError, "symlink"):
+            load_decisions(self.write(self.cleanup_payload("public/starter")), audit, self.root)
+
+        starter.unlink()
+        starter.write_text("not a directory\n", encoding="utf-8")
+        with self.assertRaisesRegex(DecisionError, "directory"):
+            load_decisions(self.write(self.cleanup_payload("public/starter")), audit, self.root)
+
+    def test_cleanup_empty_dirs_requires_matching_directory_finding_and_rejects_protected_descendants(self) -> None:
+        audit = self.audit_cleanup_directory("public/starter", non_empty=True)
+        directory_finding = next(
+            item for item in audit.directory_findings if item.relpath == "public/starter"
+        )
+        for changed_audit in (
+            replace(audit, directory_findings=[]),
+            replace(
+                audit,
+                directory_findings=[replace(directory_finding, sha256="0" * 64)],
+            ),
+        ):
+            with self.subTest(changed_audit=changed_audit.directory_findings):
+                with self.assertRaisesRegex(DecisionError, "directory finding"):
+                    load_decisions(
+                        self.write(self.cleanup_payload("public/starter")),
+                        changed_audit,
+                        self.root,
+                    )
+
+        for risk in (RiskLevel.P0, RiskLevel.P1):
+            protected = Finding(
+                finding_id="protected-{}".format(risk.value),
+                relpath="public/starter/child.txt",
+                line=1,
+                column=1,
+                matched="child",
+                category="content",
+                risk=risk,
+                evidence="protected descendant",
+                sha256="0" * 64,
+            )
+            with self.subTest(risk=risk):
+                with self.assertRaisesRegex(DecisionError, "protected finding"):
+                    load_decisions(
+                        self.write(self.cleanup_payload("public/starter")),
+                        replace(audit, findings=audit.findings + [protected]),
+                        self.root,
+                    )
+
+    def test_cleanup_empty_dirs_permits_owned_children_but_rejects_operation_overlap(self) -> None:
+        (self.root / "public/starter/demo").mkdir(parents=True)
+        (self.root / "public/starter/demo/starter.txt").write_text("demo\n", encoding="utf-8")
+        (self.root / "public/starter/samples").mkdir()
+        (self.root / "public/starter/samples/sample-starter.txt").write_text(
+            "sample\n", encoding="utf-8"
+        )
+        audit = scan_project(self.root, ["starter"])
+        decisions = load_decisions(self.write(self.cleanup_payload(
+            "public/starter",
+            delete_paths=["public/starter/samples/sample-starter.txt"],
+            rename_paths={"public/starter/demo": "public/product"},
+        )), audit, self.root)
+        self.assertEqual(decisions.cleanup_empty_dirs, ["public/starter"])
+
+        for cleanup, deletes, renames in (
+            ("public/starter/samples/sample-starter.txt", ["public/starter/samples/sample-starter.txt"], {}),
+            ("public/starter/demo", [], {"public/starter/demo": "public/product"}),
+            ("public/starter", [], {"app/demo": "public/starter"}),
+        ):
+            with self.subTest(cleanup=cleanup, deletes=deletes, renames=renames):
+                with self.assertRaisesRegex(DecisionError, "cleanup_empty_dirs"):
+                    load_decisions(
+                        self.write(self.cleanup_payload(
+                            cleanup, delete_paths=deletes, rename_paths=renames,
+                        )),
+                        audit,
+                        self.root,
+                    )
+
+    def test_cleanup_empty_dirs_cannot_be_a_delete_or_rename_source(self) -> None:
+        (self.root / "public/starter/samples").mkdir(parents=True)
+        (self.root / "public/starter/samples/sample.txt").write_text(
+            "delete\n", encoding="utf-8"
+        )
+        (self.root / "public/starter/samples/child-starter").mkdir()
+        (self.root / "public/starter/samples/child-starter/sample.txt").write_text(
+            "delete nested\n", encoding="utf-8"
+        )
+        (self.root / "public/starter/demo").mkdir()
+        (self.root / "public/starter/demo/sample.txt").write_text(
+            "rename\n", encoding="utf-8"
+        )
+        (self.root / "public/starter/demo/child-starter").mkdir()
+        (self.root / "public/starter/demo/child-starter/sample.txt").write_text(
+            "rename nested\n", encoding="utf-8"
+        )
+        audit = scan_project(self.root, ["starter"])
+
+        delete_source = "public/starter/samples"
+        rename_source = "public/starter/demo"
+        load_decisions(
+            self.write(self.cleanup_payload(delete_paths=[delete_source])), audit, self.root
+        )
+        load_decisions(
+            self.write(self.cleanup_payload(rename_paths={rename_source: "public/product"})),
+            audit,
+            self.root,
+        )
+
+        for payload in (
+            self.cleanup_payload(delete_source, delete_paths=[delete_source]),
+            self.cleanup_payload(
+                "public/starter/samples/child-starter", delete_paths=[delete_source]
+            ),
+            self.cleanup_payload(rename_source, rename_paths={rename_source: "public/product"}),
+            self.cleanup_payload(
+                "public/starter/demo/child-starter",
+                rename_paths={rename_source: "public/product"},
+            ),
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(DecisionError, "cleanup_empty_dirs"):
+                    load_decisions(self.write(payload), audit, self.root)
+
+    def test_cleanup_empty_dirs_rejects_ambiguous_cleanup_roots_and_destination_ancestors(self) -> None:
+        (self.root / "public/starter/child-starter").mkdir(parents=True)
+        audit = scan_project(self.root, ["starter"])
+        with self.assertRaisesRegex(DecisionError, "cleanup_empty_dirs"):
+            load_decisions(self.write(self.cleanup_payload(
+                "public/starter", "public/starter/child-starter",
+            )), audit, self.root)
+        with self.assertRaisesRegex(DecisionError, "cleanup_empty_dirs"):
+            load_decisions(self.write(self.cleanup_payload(
+                "public/starter", rename_paths={"app/demo": "public/starter/new"},
+            )), audit, self.root)
 
     def test_text_edit_requires_matching_audited_hash_and_current_file(self) -> None:
         with TemporaryDirectory() as tmp:
