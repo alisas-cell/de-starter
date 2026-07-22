@@ -1,5 +1,6 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from hashlib import sha256
 import json
 import os
 import shutil
@@ -230,6 +231,136 @@ class PreviewApplyTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "preview preimage changed"):
                 create_preview(root, run, audit, decisions)
+
+    def test_preview_rejects_multiline_finding_replacement_with_semantic_edit(self) -> None:
+        root, run, _audit = self.semantic_fixture()
+        target = root / "app/page.tsx"
+        target.write_text(
+            'const brand = "Northstar";\n'
+            'const second = "second";\n'
+            'const third = "third";\n'
+            'const fourth = "fourth";\n',
+            encoding="utf-8",
+        )
+        original = target.read_bytes()
+        audit = scan_project(root, ["Northstar"])
+        finding = next(
+            item for item in audit.findings
+            if item.relpath == "app/page.tsx" and item.matched == "Northstar"
+        )
+        record = next(item for item in audit.files if item.relpath == "app/page.tsx")
+        decisions_path = root.parent / "semantic-decisions.json"
+        decisions_path.write_text(json.dumps({
+            "brand_mode": "placeholder",
+            "brand_profile": {},
+            "actions": [{
+                "finding_id": finding.finding_id,
+                "action": "replace",
+                "replacement": "Your Product\nInjected line",
+            }],
+            "text_edits": [{
+                "path": "app/page.tsx",
+                "expected_sha256": record.sha256,
+                "start_line": 4,
+                "end_line": 4,
+                "replacement": 'const fourth = "neutral";\n',
+                "reason": "Replace the approved fourth line",
+            }],
+        }), encoding="utf-8")
+        decisions = load_decisions(decisions_path, audit, root)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "line-count-changing finding replacement",
+        ):
+            create_preview(root, run, audit, decisions)
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_preview_applies_two_disjoint_semantic_ranges_bottom_up(self) -> None:
+        root, run, _audit = self.semantic_fixture()
+        target = root / "app/page.tsx"
+        target.write_text(
+            "one\ntwo\nthree\nfour\nfive\nsix\n",
+            encoding="utf-8",
+        )
+        original = target.read_bytes()
+        audit = scan_project(root, ["Northstar"])
+        record = next(item for item in audit.files if item.relpath == "app/page.tsx")
+        decisions_path = root.parent / "semantic-decisions.json"
+        decisions_path.write_text(json.dumps({
+            "brand_mode": "placeholder",
+            "brand_profile": {},
+            "actions": [],
+            "text_edits": [{
+                "path": "app/page.tsx",
+                "expected_sha256": record.sha256,
+                "start_line": 2,
+                "end_line": 2,
+                "replacement": "two-a\ntwo-b\n",
+                "reason": "Expand the approved second line",
+            }, {
+                "path": "app/page.tsx",
+                "expected_sha256": record.sha256,
+                "start_line": 4,
+                "end_line": 5,
+                "replacement": "four-five\n",
+                "reason": "Collapse the approved fourth and fifth lines",
+            }],
+        }), encoding="utf-8")
+        decisions = load_decisions(decisions_path, audit, root)
+
+        manifest = create_preview(root, run, audit, decisions)
+
+        expected = b"one\ntwo-a\ntwo-b\nthree\nfour-five\nsix\n"
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(
+            (Path(manifest.preview_root) / "app/page.tsx").read_bytes(),
+            expected,
+        )
+        metadata = json.loads((run / "semantic-edits.json").read_text())
+        self.assertEqual(
+            [
+                (item["start_line"], item["end_line"])
+                for item in metadata["edits"]
+            ],
+            [(2, 2), (4, 5)],
+        )
+        self.assertTrue(all(
+            item["before_sha256"] == record.sha256
+            for item in metadata["edits"]
+        ))
+        final_hash = sha256(expected).hexdigest()
+        self.assertTrue(all(
+            item["after_sha256"] == final_hash
+            for item in metadata["edits"]
+        ))
+        self.assertEqual(manifest.preview_hashes["app/page.tsx"], final_hash)
+
+    def test_apply_rejects_late_semantic_artifact_change_at_pinned_verification(self) -> None:
+        root, run, audit = self.semantic_fixture()
+        target = root / "app/page.tsx"
+        original = target.read_bytes()
+        manifest = self._semantic_preview(root, run, audit)
+        from destarter_lib import apply as module
+        original_verify = module._verify_pinned_approval
+        changed = []
+
+        def change_artifact_at_pinned_verification(transaction):
+            if not changed:
+                (run / "semantic-edits.json").write_text(
+                    '{"edits": []}\n', encoding="utf-8"
+                )
+                changed.append(True)
+            return original_verify(transaction)
+
+        with patch(
+            "destarter_lib.apply._verify_pinned_approval",
+            side_effect=change_artifact_at_pinned_verification,
+        ):
+            with self.assertRaisesRegex(ApplyError, "artifact changed"):
+                apply_preview(root, run, manifest.approval_token)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertFalse((run / "backup").exists())
 
     def test_apply_rejects_wrong_token_and_stale_source_or_preview(self) -> None:
         with TemporaryDirectory() as tmp:

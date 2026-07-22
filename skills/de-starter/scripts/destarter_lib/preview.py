@@ -263,6 +263,7 @@ def create_preview(
     changed = set()
     action_preimage_hashes: Dict[str, str] = {}
     actions_by_path: Dict[str, List[Tuple[object, object]]] = {}
+    semantic_paths = {edit.path for edit in decisions.text_edits}
     for action in decisions.actions:
         if action.action != "replace":
             continue
@@ -274,6 +275,14 @@ def create_preview(
         source_path = root / _safe_relpath(finding.relpath)
         if source_path.is_symlink() or sha256_file(source_path) != finding.sha256:
             raise ValueError("finding no longer matches source: {}".format(finding.finding_id))
+        if finding.relpath in semantic_paths and any(
+            character in (action.replacement or "")
+            for character in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+        ):
+            raise ValueError(
+                "line-count-changing finding replacement conflicts with "
+                "semantic edit: {}".format(finding.relpath)
+            )
         actions_by_path.setdefault(finding.relpath, []).append((finding, action))
 
     for relpath, pairs in actions_by_path.items():
