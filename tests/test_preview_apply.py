@@ -2324,7 +2324,269 @@ class PreviewApplyTests(unittest.TestCase):
             changed_state.cleanup_dir_states["public/starter"]["state_sha256"],
         )
 
-    def test_apply_refuses_cleanup_manifest_before_creating_a_backup(self) -> None:
+    def test_apply_moves_an_approved_empty_directory_to_external_backup(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        directory = root / "public/starter"
+        directory.chmod(0o711)
+        initial = directory.stat()
+        audit = scan_project(root, ["starter", "demo"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+
+        result = apply_preview(root, run, manifest.approval_token)
+
+        self.assertFalse(directory.exists())
+        self.assertTrue((root / "public").is_dir())
+        self.assertEqual(result.cleaned_empty_dirs, ["public/starter"])
+        restore = json.loads(Path(result.restore_manifest).read_text(encoding="utf-8"))
+        self.assertEqual(restore["restoration_order"][0], {
+            "kind": "cleanup-directory",
+            "path": "public/starter",
+        })
+        self.assertEqual(len(restore["cleanup_directories"]), 1)
+        cleanup = restore["cleanup_directories"][0]
+        self.assertEqual(cleanup["path"], "public/starter")
+        self.assertEqual(cleanup["mode"], 0o711)
+        self.assertEqual(cleanup["state_sha256"], manifest.cleanup_dir_states["public/starter"]["state_sha256"])
+        self.assertEqual(cleanup["source_identity"], [initial.st_dev, initial.st_ino])
+        self.assertEqual(cleanup["source_device"], initial.st_dev)
+        self.assertEqual(cleanup["source_inode"], initial.st_ino)
+        self.assertTrue(cleanup["source_was_empty"])
+        self.assertTrue(cleanup["backup_empty"])
+        self.assertEqual(cleanup["restored_identity_guarantee"], "new-inode-not-guaranteed")
+        backup = Path(cleanup["backup"])
+        self.assertTrue(backup.is_dir())
+        self.assertEqual(list(backup.iterdir()), [])
+        self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o711)
+        self.assertIn(
+            "Restore cleaned empty directory from verified backup: public/starter",
+            (run / "reverse.diff").read_text(encoding="utf-8"),
+        )
+
+    def test_apply_moves_child_originals_before_cleanup_and_records_parent_first_restore(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+
+        result = apply_preview(root, run, manifest.approval_token)
+
+        self.assertFalse((root / "public/starter").exists())
+        restore = json.loads(Path(result.restore_manifest).read_text(encoding="utf-8"))
+        cleanup = restore["cleanup_directories"][0]
+        child = next(
+            item for item in restore["operations"]
+            if item["path"] == "public/starter/sample-starter.txt"
+        )
+        self.assertTrue(Path(cleanup["backup"]).is_dir())
+        self.assertTrue(Path(child["backup"]).is_file())
+        self.assertEqual(restore["restoration_order"][:2], [
+            {"kind": "cleanup-directory", "path": "public/starter"},
+            {"kind": "original", "path": "public/starter/sample-starter.txt"},
+        ])
+
+    def test_apply_moves_renamed_child_before_cleaning_its_source_parent(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="demo/starter.txt")
+        audit = scan_project(root, ["starter", "demo"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                rename_paths={"public/starter/demo": "public/product"},
+            ),
+        )
+
+        result = apply_preview(root, run, manifest.approval_token)
+
+        self.assertFalse((root / "public/starter").exists())
+        self.assertEqual(
+            (root / "public/product/starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+        self.assertEqual(result.cleaned_empty_dirs, ["public/starter"])
+
+    def test_cleanup_parent_is_restored_before_its_child_original_on_late_failure(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        (root / "public/starter").chmod(0o750)
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+
+        with patch(
+            "destarter_lib.apply._write_artifact_atomic",
+            side_effect=OSError("injected late evidence failure"),
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back"):
+                apply_preview(root, run, manifest.approval_token)
+
+        restored = root / "public/starter"
+        self.assertTrue(restored.is_dir())
+        self.assertEqual(stat.S_IMODE(restored.stat().st_mode), 0o750)
+        self.assertEqual(
+            (restored / "sample-starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+
+    def test_cleanup_restore_payload_can_reconstruct_directory_path_and_mode(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        (root / "public/starter").chmod(0o750)
+        audit = scan_project(root, ["starter", "demo"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        result = apply_preview(root, run, manifest.approval_token)
+        restore = json.loads(Path(result.restore_manifest).read_text(encoding="utf-8"))
+
+        disposable = root.parent / "disposable-restore"
+        disposable.mkdir()
+        for item in restore["cleanup_directories"]:
+            target = disposable / item["path"]
+            target.mkdir(parents=True)
+            target.chmod(item["mode"])
+
+        restored = disposable / "public/starter"
+        self.assertTrue(restored.is_dir())
+        self.assertEqual(list(restored.iterdir()), [])
+        self.assertEqual(stat.S_IMODE(restored.stat().st_mode), 0o750)
+
+    def test_cleanup_race_after_child_move_preserves_foreign_child_and_reports_incomplete_rollback(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+        original_move = apply_module._move_cleanup_directories
+
+        def insert_foreign(transaction):
+            (root / "public/starter/foreign.txt").write_text(
+                "foreign content must survive\n", encoding="utf-8",
+            )
+            return original_move(transaction)
+
+        with patch(
+            "destarter_lib.apply._move_cleanup_directories",
+            side_effect=insert_foreign,
+        ):
+            with self.assertRaisesRegex(ApplyError, "rollback failed.*not restored"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertEqual(
+            (root / "public/starter/foreign.txt").read_text(encoding="utf-8"),
+            "foreign content must survive\n",
+        )
+        self.assertEqual(
+            (root / "public/starter/sample-starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+        self.assertTrue((run / "backup").is_dir())
+
+    def test_cleanup_refuses_a_new_terminal_inode_at_the_final_move_boundary(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_move = apply_module._move_cleanup_directories
+        displaced = root.parent / "displaced-cleanup"
+
+        def replace_terminal(transaction):
+            (root / "public/starter").rename(displaced)
+            (root / "public/starter").mkdir()
+            (root / "public/starter/foreign.txt").write_text(
+                "preserve replacement\n", encoding="utf-8",
+            )
+            return original_move(transaction)
+
+        with patch(
+            "destarter_lib.apply._move_cleanup_directories",
+            side_effect=replace_terminal,
+        ):
+            with self.assertRaisesRegex(ApplyError, "cleanup directory changed"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertEqual(
+            (root / "public/starter/foreign.txt").read_text(encoding="utf-8"),
+            "preserve replacement\n",
+        )
+        self.assertTrue(displaced.is_dir())
+        self.assertFalse((run / "backup").exists())
+
+    def test_cleanup_rolls_back_first_directory_when_second_atomic_move_fails(self) -> None:
+        root, run, _audit = self.cleanup_fixture()
+        (root / "public/starter-two").mkdir()
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter", "public/starter-two"],
+            ),
+        )
+        original_atomic = apply_module._atomic_rename_no_replace
+        forward_calls = []
+
+        def fail_second_forward(source, destination, **kwargs):
+            if source in {"starter", "starter-two"}:
+                forward_calls.append(source)
+                if len(forward_calls) == 2:
+                    raise OSError("injected second cleanup move failure")
+            return original_atomic(source, destination, **kwargs)
+
+        with patch(
+            "destarter_lib.apply._atomic_rename_no_replace",
+            side_effect=fail_second_forward,
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertEqual(forward_calls, ["starter", "starter-two"])
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertTrue((root / "public/starter-two").is_dir())
+        self.assertTrue((run / "backup").is_dir())
+
+    def test_cleanup_rolls_back_after_restore_artifact_write_failure(self) -> None:
         root, run, audit = self.cleanup_fixture()
         manifest = create_preview(
             root,
@@ -2333,10 +2595,237 @@ class PreviewApplyTests(unittest.TestCase):
             self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
         )
 
-        with self.assertRaisesRegex(ApplyError, "empty-directory cleanup.*not implemented"):
-            apply_preview(root, run, manifest.approval_token)
+        with patch(
+            "destarter_lib.apply._write_artifact_atomic",
+            side_effect=OSError("injected restore artifact failure"),
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back"):
+                apply_preview(root, run, manifest.approval_token)
+
         self.assertTrue((root / "public/starter").is_dir())
-        self.assertFalse((run / "backup").exists())
+        self.assertEqual(list((root / "public/starter").iterdir()), [])
+        self.assertTrue((run / "backup").is_dir())
+        self.assertFalse((run / "restore.json").exists())
+        self.assertFalse((run / "reverse.diff").exists())
+
+    def test_cleanup_rollback_never_overwrites_a_foreign_restore_target(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_atomic = apply_module._atomic_rename_no_replace
+        inserted = []
+
+        def race_restore(source, destination, **kwargs):
+            if source.startswith("cleanup-") and destination == "starter" and not inserted:
+                target = root / "public/starter"
+                target.mkdir()
+                (target / "foreign.txt").write_text(
+                    "foreign restore collision\n", encoding="utf-8",
+                )
+                inserted.append(True)
+            return original_atomic(source, destination, **kwargs)
+
+        with patch(
+            "destarter_lib.apply._atomic_rename_no_replace",
+            side_effect=race_restore,
+        ), patch(
+            "destarter_lib.apply._write_artifact_atomic",
+            side_effect=OSError("force cleanup rollback"),
+        ):
+            with self.assertRaisesRegex(ApplyError, "rollback failed"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(inserted)
+        self.assertEqual(
+            (root / "public/starter/foreign.txt").read_text(encoding="utf-8"),
+            "foreign restore collision\n",
+        )
+        backup_entries = list((run / "backup/original").iterdir())
+        self.assertEqual(len(backup_entries), 1)
+        self.assertTrue(backup_entries[0].is_dir())
+        self.assertEqual(list(backup_entries[0].iterdir()), [])
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_cleanup_final_symlink_replacement_is_preserved_with_backup(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+        original_move = apply_module._move_cleanup_directories
+        displaced = root.parent / "displaced-final-symlink"
+
+        def replace_with_symlink(transaction):
+            (root / "public/starter").rename(displaced)
+            (root / "public/starter").symlink_to(
+                displaced, target_is_directory=True,
+            )
+            return original_move(transaction)
+
+        with patch(
+            "destarter_lib.apply._move_cleanup_directories",
+            side_effect=replace_with_symlink,
+        ):
+            with self.assertRaisesRegex(ApplyError, "rollback failed"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue((root / "public/starter").is_symlink())
+        self.assertEqual(
+            (displaced / "sample-starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+        self.assertTrue((run / "backup").is_dir())
+
+    def test_cleanup_final_ancestor_replacement_preserves_both_trees(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+        original_move = apply_module._move_cleanup_directories
+        displaced = root.parent / "displaced-final-public"
+
+        def replace_ancestor(transaction):
+            (root / "public").rename(displaced)
+            (root / "public/starter").mkdir(parents=True)
+            (root / "public/starter/foreign.txt").write_text(
+                "foreign ancestor tree\n", encoding="utf-8",
+            )
+            return original_move(transaction)
+
+        with patch(
+            "destarter_lib.apply._move_cleanup_directories",
+            side_effect=replace_ancestor,
+        ):
+            with self.assertRaisesRegex(ApplyError, "rollback failed"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertEqual(
+            (root / "public/starter/foreign.txt").read_text(encoding="utf-8"),
+            "foreign ancestor tree\n",
+        )
+        self.assertEqual(
+            (displaced / "starter/sample-starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+        self.assertTrue((run / "backup").is_dir())
+
+    def test_cleanup_foreign_backup_content_is_never_removed_during_rollback(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_verify = apply_module._verify_backups
+        inserted = []
+
+        def add_foreign_to_moved_backup(transaction):
+            moved = next(
+                (
+                    item for item in transaction.cleanup_directories
+                    if item.moved_empty is not None
+                ),
+                None,
+            )
+            if moved is not None and not inserted:
+                backup = run / "backup/original" / moved.backup_name
+                (backup / "foreign.txt").write_text(
+                    "foreign backup content\n", encoding="utf-8",
+                )
+                inserted.append(backup)
+            return original_verify(transaction)
+
+        with patch(
+            "destarter_lib.apply._verify_backups",
+            side_effect=add_foreign_to_moved_backup,
+        ):
+            with self.assertRaisesRegex(ApplyError, "rollback failed.*backup.*changed"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(inserted)
+        self.assertEqual(
+            (inserted[0] / "foreign.txt").read_text(encoding="utf-8"),
+            "foreign backup content\n",
+        )
+        self.assertFalse((root / "public/starter").exists())
+        self.assertTrue((run / "backup").is_dir())
+
+    def test_cleanup_atomic_move_failure_restores_child_original(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+
+        with patch(
+            "destarter_lib.apply._atomic_rename_no_replace",
+            side_effect=PermissionError("injected cleanup permission failure"),
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertEqual(
+            (root / "public/starter/sample-starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+        self.assertTrue((run / "backup").is_dir())
+
+    def test_cleanup_reverse_diff_write_failure_removes_owned_restore_artifact(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_write = apply_module._write_artifact_atomic
+
+        def fail_reverse(transaction, name, content):
+            if name == "reverse.diff":
+                raise OSError("injected reverse diff failure")
+            return original_write(transaction, name, content)
+
+        with patch(
+            "destarter_lib.apply._write_artifact_atomic",
+            side_effect=fail_reverse,
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertFalse((run / "restore.json").exists())
+        self.assertFalse((run / "reverse.diff").exists())
+        self.assertTrue((run / "backup").is_dir())
 
     def test_apply_strictly_loads_cleanup_manifest_fields_before_backup(self) -> None:
         cases = (

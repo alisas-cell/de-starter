@@ -25,6 +25,7 @@ from .preview import (
     _state_hash,
     _token,
     _tree_hash,
+    _atomic_rename_no_replace,
 )
 from .report import redact_evidence
 
@@ -87,6 +88,20 @@ class Output:
     created: Optional[ObjectState] = None
 
 
+@dataclass
+class CleanupDirectory:
+    relpath: str
+    parent_fd: int
+    directory_fd: int
+    parent_identity: Identity
+    name: str
+    initial: ObjectState
+    mode: int
+    state_sha256: str
+    backup_name: str
+    moved_empty: Optional[ObjectState] = None
+
+
 @dataclass(frozen=True)
 class ParentStep:
     relpath: str
@@ -125,6 +140,7 @@ class Transaction:
     owner_state: ObjectState
     originals: List[Original]
     outputs: List[Output]
+    cleanup_directories: List[CleanupDirectory]
     ambient: Dict[str, Identity]
     created_parents: List[CreatedParent] = field(default_factory=list)
     fds: List[int] = field(default_factory=list)
@@ -747,6 +763,12 @@ def _reverse_diff(
         lines.append(
             "Reverse rename: {} -> {}\n".format(destination, source)
         )
+    for relpath in manifest.cleanup_empty_dirs:
+        lines.append(
+            "Restore cleaned empty directory from verified backup: {}\n".format(
+                relpath
+            )
+        )
     return redact_evidence("".join(lines))
 
 
@@ -1311,14 +1333,63 @@ def _prepare_transaction(
                 )
             )
 
+        cleanup_directories = []
+        for index, relpath in enumerate(manifest.cleanup_empty_dirs):
+            parent_fd, directory_fd, name, identity = _open_cleanup_directory(
+                root_fd, relpath,
+            )
+            fds.append(parent_fd)
+            fds.append(directory_fd)
+            parent_identity = _identity_from_stat(os.fstat(parent_fd))
+            initial = _state_from_open(directory_fd)
+            expected = manifest.cleanup_dir_states[relpath]
+            if (
+                initial.identity != identity
+                or initial.kind != "dir"
+                or initial.forbidden
+                or stat.S_IMODE(os.fstat(directory_fd).st_mode) != expected["mode"]
+                or identity != (expected["device"], expected["inode"])
+            ):
+                _fail(
+                    "cleanup directory changed while transaction was prepared: "
+                    "{}".format(relpath)
+                )
+            if (
+                os.fstat(parent_fd).st_dev != os.fstat(original_fd).st_dev
+                or identity[0] != os.fstat(original_fd).st_dev
+            ):
+                _fail(
+                    "cleanup directory is not on the external backup "
+                    "filesystem: {}".format(relpath)
+                )
+            cleanup_directories.append(CleanupDirectory(
+                relpath,
+                parent_fd,
+                directory_fd,
+                parent_identity,
+                name,
+                initial,
+                expected["mode"],
+                expected["state_sha256"],
+                "cleanup-{:04d}-{}".format(index, uuid.uuid4().hex),
+            ))
+
         ambient_paths: List[Path] = [root, run, preview, run / "backup", run / "backup" / "original"]
         ambient_paths.extend(
             root / _safe_relpath(item.relpath).parent
             for item in originals
+            if not any(
+                _under(cleanup_path, _safe_relpath(item.relpath).parent.as_posix())
+                for cleanup_path in manifest.cleanup_empty_dirs
+            )
         )
         ambient_paths.extend(
             root / _safe_relpath(item.anchor_relpath)
             for item in outputs
+        )
+        ambient_paths.extend(
+            root / _safe_relpath(item.relpath).parent
+            for item in cleanup_directories
         )
         transaction = Transaction(
             root,
@@ -1336,6 +1407,7 @@ def _prepare_transaction(
             owner_state,
             originals,
             outputs,
+            cleanup_directories,
             _capture_ambient(ambient_paths),
             [],
             fds,
@@ -1346,7 +1418,7 @@ def _prepare_transaction(
         temporary = Transaction(
             root, run, preview, manifest, raw, root_fd, run_fd,
             preview_fd, backup_fd, original_fd,
-            backup_identity, original_identity, owner_state, [], [], {}, [], fds,
+            backup_identity, original_identity, owner_state, [], [], [], {}, [], fds,
         )
         _cleanup_empty_backup(temporary)
         temporary.close()
@@ -1365,6 +1437,32 @@ def _verify_pinned_approval(transaction: Transaction) -> None:
             )
         if actual != original.expected:
             _fail("source changed after preview: {}".format(original.relpath))
+    for cleanup in transaction.cleanup_directories:
+        try:
+            current_parent_fd, current_fd, _name, identity = (
+                _open_cleanup_directory(transaction.root_fd, cleanup.relpath)
+            )
+        except ApplyError:
+            raise
+        try:
+            if (
+                _identity_from_stat(os.fstat(current_parent_fd))
+                != cleanup.parent_identity
+                or identity != cleanup.initial.identity
+                or _identity_from_stat(os.fstat(cleanup.directory_fd))
+                != cleanup.initial.identity
+                or _identity_at(cleanup.parent_fd, cleanup.name)
+                != cleanup.initial.identity
+                or stat.S_IMODE(os.fstat(current_fd).st_mode) != cleanup.mode
+                or _state_from_open(current_fd) != cleanup.initial
+            ):
+                _fail(
+                    "cleanup directory changed after transaction pin: "
+                    "{}".format(cleanup.relpath)
+                )
+        finally:
+            os.close(current_fd)
+            os.close(current_parent_fd)
     original_by_path = {
         item.relpath: item for item in transaction.originals
     }
@@ -1588,6 +1686,84 @@ def _create_outputs(transaction: Transaction) -> None:
         _copy_output(output)
 
 
+def _move_cleanup_directories(transaction: Transaction) -> None:
+    """Move only proved-empty, still-pinned cleanup directories to backup."""
+    for cleanup in transaction.cleanup_directories:
+        if not _absent(transaction.original_fd, cleanup.backup_name):
+            _fail("unique cleanup backup destination was unexpectedly occupied")
+        current_parent_fd, current_fd, _name, identity = _open_cleanup_directory(
+            transaction.root_fd, cleanup.relpath,
+        )
+        try:
+            if (
+                _identity_from_stat(os.fstat(current_parent_fd))
+                != cleanup.parent_identity
+                or identity != cleanup.initial.identity
+                or _identity_from_stat(os.fstat(cleanup.directory_fd))
+                != cleanup.initial.identity
+                or _identity_at(cleanup.parent_fd, cleanup.name)
+                != cleanup.initial.identity
+            ):
+                _fail(
+                    "cleanup directory changed before atomic move: {}".format(
+                        cleanup.relpath
+                    )
+                )
+            info = os.fstat(current_fd)
+            if stat.S_IMODE(info.st_mode) != cleanup.mode:
+                _fail(
+                    "cleanup directory mode changed before atomic move: {}".format(
+                        cleanup.relpath
+                    )
+                )
+            if os.listdir(current_fd):
+                _fail(
+                    "cleanup directory is not empty at atomic move: {}".format(
+                        cleanup.relpath
+                    )
+                )
+            empty_state = _state_from_open(current_fd)
+            if (
+                empty_state.identity != cleanup.initial.identity
+                or empty_state.kind != "dir"
+                or empty_state.forbidden
+            ):
+                _fail(
+                    "cleanup directory changed while proving emptiness: {}".format(
+                        cleanup.relpath
+                    )
+                )
+            if _identity_at(cleanup.parent_fd, cleanup.name) != empty_state.identity:
+                _fail(
+                    "cleanup directory changed at atomic move boundary: {}".format(
+                        cleanup.relpath
+                    )
+                )
+            _atomic_rename_no_replace(
+                cleanup.name,
+                cleanup.backup_name,
+                src_dir_fd=cleanup.parent_fd,
+                dst_dir_fd=transaction.original_fd,
+            )
+            moved = _state_at(transaction.original_fd, cleanup.backup_name)
+            cleanup.moved_empty = moved
+            if moved != empty_state:
+                _fail(
+                    "cleanup directory changed at atomic move boundary: {}".format(
+                        cleanup.relpath
+                    )
+                )
+            if not _absent(cleanup.parent_fd, cleanup.name):
+                _fail(
+                    "cleanup directory name reappeared after move: {}".format(
+                        cleanup.relpath
+                    )
+                )
+        finally:
+            os.close(current_fd)
+            os.close(current_parent_fd)
+
+
 def _verify_backups(transaction: Transaction) -> None:
     if (
         _identity_at(transaction.run_fd, "backup")
@@ -1604,6 +1780,16 @@ def _verify_backups(transaction: Transaction) -> None:
         actual = _state_at(transaction.original_fd, original.backup_name)
         if actual != original.moved or actual != original.expected:
             _fail("external backup verification failed: {}".format(original.relpath))
+    for cleanup in transaction.cleanup_directories:
+        if cleanup.moved_empty is None:
+            continue
+        actual = _state_at(transaction.original_fd, cleanup.backup_name)
+        if actual != cleanup.moved_empty:
+            _fail(
+                "external cleanup backup verification failed: {}".format(
+                    cleanup.relpath
+                )
+            )
 
 
 def _fd_transaction(transaction: Transaction) -> None:
@@ -1614,6 +1800,8 @@ def _fd_transaction(transaction: Transaction) -> None:
     _move_originals(transaction)
     _verify_backups(transaction)
     _create_outputs(transaction)
+    _move_cleanup_directories(transaction)
+    _verify_backups(transaction)
 
 
 def _verify_success(transaction: Transaction) -> None:
@@ -1646,6 +1834,19 @@ def _verify_success(transaction: Transaction) -> None:
             _fail(
                 "post-apply output identity or state changed: "
                 "{}".format(output.relpath)
+            )
+    for cleanup in transaction.cleanup_directories:
+        if cleanup.moved_empty is None:
+            _fail(
+                "approved cleanup directory was not moved: {}".format(
+                    cleanup.relpath
+                )
+            )
+        if not _absent(cleanup.parent_fd, cleanup.name):
+            _fail(
+                "cleaned directory name reappeared after move: {}".format(
+                    cleanup.relpath
+                )
             )
     if (
         _safe_root_digest(transaction.root_fd)
@@ -1925,6 +2126,64 @@ def _restore_original_no_replace(
     return "original {} has unsupported backup type".format(original.relpath)
 
 
+def _restore_cleanup_no_replace(
+    transaction: Transaction,
+    cleanup: CleanupDirectory,
+    backup: ObjectState,
+) -> Optional[str]:
+    """Restore one cleanup parent before child originals, never replacing data."""
+    current_parent_fd = -1
+    try:
+        current_parent_fd, current_name = _open_parent(
+            transaction.root_fd, cleanup.relpath,
+        )
+        if (
+            current_name != cleanup.name
+            or _identity_from_stat(os.fstat(current_parent_fd))
+            != cleanup.parent_identity
+            or _identity_from_stat(os.fstat(cleanup.parent_fd))
+            != cleanup.parent_identity
+        ):
+            return (
+                "cleanup parent {} changed before no-replace restore; "
+                "target and backup preserved".format(cleanup.relpath)
+            )
+        if not _absent(cleanup.parent_fd, cleanup.name):
+            return (
+                "cleanup directory name {} was occupied during no-replace "
+                "restore; target and backup preserved".format(cleanup.relpath)
+            )
+        if _state_at(transaction.original_fd, cleanup.backup_name) != backup:
+            return "cleanup backup {} changed; preserved".format(cleanup.relpath)
+        try:
+            _atomic_rename_no_replace(
+                cleanup.backup_name,
+                cleanup.name,
+                src_dir_fd=transaction.original_fd,
+                dst_dir_fd=cleanup.parent_fd,
+            )
+        except Exception as error:
+            return (
+                "cleanup directory {} no-replace restore failed; target and "
+                "backup preserved: {}".format(cleanup.relpath, error)
+            )
+        restored = _state_at(cleanup.parent_fd, cleanup.name)
+        if restored != backup:
+            return (
+                "cleanup directory {} changed during restore; restored entry "
+                "preserved for recovery".format(cleanup.relpath)
+            )
+        return None
+    except Exception as error:
+        return (
+            "cleanup directory {} no-replace restore failed; backup "
+            "preserved: {}".format(cleanup.relpath, error)
+        )
+    finally:
+        if current_parent_fd >= 0:
+            os.close(current_parent_fd)
+
+
 def _remove_created_parents(transaction: Transaction) -> List[str]:
     errors: List[str] = []
     for parent in reversed(transaction.created_parents):
@@ -1997,6 +2256,31 @@ def _rollback(transaction: Transaction) -> List[str]:
         )
         if error:
             errors.append(error)
+    # Cleanup parents must exist again before their child originals can return.
+    for cleanup in transaction.cleanup_directories:
+        if cleanup.moved_empty is None:
+            continue
+        try:
+            backup = _state_at(
+                transaction.original_fd, cleanup.backup_name,
+            )
+        except Exception as error:
+            errors.append(
+                "cleanup backup {} cannot be verified: {}".format(
+                    cleanup.relpath, error
+                )
+            )
+            continue
+        if backup != cleanup.moved_empty:
+            errors.append(
+                "cleanup backup {} changed; preserved".format(cleanup.relpath)
+            )
+            continue
+        restore_error = _restore_cleanup_no_replace(
+            transaction, cleanup, backup,
+        )
+        if restore_error:
+            errors.append(restore_error)
     for original in reversed(transaction.originals):
         if original.moved is None:
             continue
@@ -2083,12 +2367,45 @@ def _restore_payload(transaction: Transaction) -> str:
             "sha256": original.expected.digest,
             "identity": list(original.expected.identity),
         })
+    cleanup_directories = []
+    for cleanup in transaction.cleanup_directories:
+        moved = cleanup.moved_empty
+        cleanup_directories.append({
+            "path": cleanup.relpath,
+            "backup": str(
+                transaction.run
+                / "backup"
+                / "original"
+                / cleanup.backup_name
+            ),
+            "mode": cleanup.mode,
+            "state_sha256": cleanup.state_sha256,
+            "source_identity": list(cleanup.initial.identity),
+            "source_device": cleanup.initial.identity[0],
+            "source_inode": cleanup.initial.identity[1],
+            "source_was_empty": transaction.manifest.cleanup_dir_states[
+                cleanup.relpath
+            ]["is_empty"],
+            "backup_identity": list(moved.identity) if moved else None,
+            "backup_empty": bool(moved is not None and moved.kind == "dir"),
+            "restored_identity_guarantee": "new-inode-not-guaranteed",
+        })
+    restoration_order = [
+        {"kind": "cleanup-directory", "path": item.relpath}
+        for item in transaction.cleanup_directories
+    ]
+    restoration_order.extend(
+        {"kind": "original", "path": item.relpath}
+        for item in reversed(transaction.originals)
+    )
     return json.dumps({
         "backup_root": str(transaction.run / "backup"),
         "created_parent_dirs": [
             item.relpath for item in transaction.created_parents
         ],
         "operations": operations,
+        "cleanup_directories": cleanup_directories,
+        "restoration_order": restoration_order,
         "deleted_paths": transaction.manifest.deleted_paths,
         "renamed_paths": transaction.manifest.renamed_paths,
     }, indent=2, sort_keys=True) + "\n"
@@ -2154,11 +2471,6 @@ def apply_preview(
         ):
             _fail("text replacement preflight failed: {}".format(relpath))
     reverse = _reverse_diff(root, preview, manifest)
-    if manifest.cleanup_empty_dirs:
-        _fail(
-            "empty-directory cleanup transaction is not implemented; "
-            "approval preflight completed without creating a backup"
-        )
 
     transaction = _prepare_transaction(
         root, run, preview, manifest, raw
@@ -2190,6 +2502,9 @@ def apply_preview(
                 item.moved is not None for item in transaction.originals
             ) or any(
                 item.created is not None for item in transaction.outputs
+            ) or any(
+                item.moved_empty is not None
+                for item in transaction.cleanup_directories
             ) or bool(transaction.created_parents) or bool(transaction.artifacts)
             if not mutated:
                 if isinstance(error, DirectoryCreationCleanupError):
@@ -2226,10 +2541,11 @@ def apply_preview(
         transaction.close()
 
     return ApplyResult(
-        manifest.run_id,
-        manifest.changed_paths,
-        manifest.deleted_paths,
-        manifest.renamed_paths,
-        str(run / "backup"),
-        str(run / "restore.json"),
+        run_id=manifest.run_id,
+        changed_paths=manifest.changed_paths,
+        deleted_paths=manifest.deleted_paths,
+        renamed_paths=manifest.renamed_paths,
+        backup_root=str(run / "backup"),
+        restore_manifest=str(run / "restore.json"),
+        cleaned_empty_dirs=manifest.cleanup_empty_dirs,
     )

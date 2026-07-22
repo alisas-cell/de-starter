@@ -133,6 +133,7 @@ class ApplyResult:
     renamed_paths: Dict[str, str]
     backup_root: str
     restore_manifest: str
+    cleaned_empty_dirs: List[str] = field(default_factory=list)
 
 
 def to_dict(value: object) -> Dict[str, object]:
