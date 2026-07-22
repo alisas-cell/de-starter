@@ -1,0 +1,135 @@
+# Protected Semantic Edits Design
+
+## Context
+
+The private Starter acceptance run proved that exact source-term replacements and whole-path operations are insufficient for a complete de-starter workflow. Removing a fabricated testimonial component also requires removing its imports and JSX usage. Replacing a source course URL does not by itself turn the surrounding course promotion into neutral product copy.
+
+The real Starter must remain unchanged until the user approves the exact external preview and token. The public Skill must remain generic and must not contain private project names, paths, source excerpts, or assets.
+
+## Decision
+
+Add guarded, line-range semantic edits to `decisions.json`. The Agent may author these edits only after gate-one scope approval. The runtime applies them only to the external preview copy, includes their exact result in the preview diff and approval token, and later applies only the approved preview bytes.
+
+This is preferred over accepting unified diff files because Python standard-library patch parsing would require path, fuzz, rename, and binary semantics that v0.1 does not need. It is preferred over directly editing the preview tree because an explicit decision file remains deterministic, reviewable, and reproducible.
+
+## Input Contract
+
+Add `text_edits` to the allowed top-level `decisions.json` keys:
+
+```json
+{
+  "text_edits": [
+    {
+      "path": "app/page.tsx",
+      "expected_sha256": "64-lowercase-hex-characters",
+      "start_line": 12,
+      "end_line": 15,
+      "replacement": "",
+      "reason": "Remove the approved sample testimonial component usage"
+    }
+  ]
+}
+```
+
+Line numbers are one-based and inclusive. An empty replacement deletes the selected lines. Insert-only edits, binary edits, fuzzy matching, and patch application are outside v0.1. Multiple edits in one file are allowed only when their original line ranges do not overlap.
+
+`expected_sha256` must equal both the audited file hash and the current project file hash. `reason` must be a nonempty, user-reviewable description. The replacement remains private inside the external run directory; public artifacts expose only safe aggregate metadata.
+
+## Validation and Protection Rules
+
+The decision loader must reject a semantic edit when any of these conditions holds:
+
+- the path is absolute, escapes the project, is absent from the audit inventory, or resolves through a symlink;
+- the path is a directory, binary file, ignored dependency/build path, secret file, LICENSE, NOTICE, COPYING, or another invariant-protected path;
+- the expected hash is malformed or differs from the audit;
+- the line range is invalid, outside the original file, or overlaps another semantic edit;
+- the range overlaps any P0 or P1 finding line;
+- the range overlaps an existing finding-based replacement action;
+- the replacement or reason has the wrong JSON type.
+
+P1 changes continue to use the existing finding action with explicit migration and rollback plans. Semantic edits cannot bypass that gate. P0 remains immutable.
+
+The Skill must name every semantic-edit path and purpose at gate one. Deletions and renames retain their existing explicit-approval rules. Gate two remains the authority for the exact resulting bytes.
+
+## Preview Data Flow
+
+1. Load the current audit and validate every existing action, path operation, and semantic edit against the original audit inventory.
+2. Copy the project into the guarded external preview tree.
+3. Apply existing finding replacements using original line and column coordinates.
+4. Apply semantic edits from the bottom of each file upward so original line coordinates remain stable.
+5. Apply approved renames and deletions.
+6. Generate the complete redacted `preview.diff`, preview hashes, protected/retained lists, placeholder report, and a safe `semantic-edits.json` containing only path, original range, reason, and before/after hashes.
+7. Bind semantic-edit intent metadata and the resulting preview file hashes into the approval token.
+
+The original project is not written during this flow. Any source, audit, decision, preview, or manifest change invalidates the current approval token.
+
+## Apply and Recovery
+
+The existing apply transaction continues to copy approved bytes from the preview tree. Semantic edits therefore use the same final-entry source rechecks, verified external backups, atomic replacement, rollback, restore manifest, and reverse diff as finding replacements.
+
+No new direct-to-project editing path is introduced. A stale source hash, changed mode, late secret, preview tampering, or backup failure aborts before an unapproved result can be committed.
+
+## Reporting
+
+Private acceptance produces a written before/after effect audit in the external run directory. It records aggregate P0/P1/P2/P3 counts, changed/deleted/renamed paths, validation commands, remaining protected findings, placeholders, backup location, and restore instructions. It may name the private target but must not reproduce purchased source or asset contents.
+
+The public repository produces two sanitized written deliverables:
+
+- `examples/sanitized-real-run-summary.md`: aggregate real-world acceptance evidence with private identities and paths removed;
+- `docs/video-kit.zh-CN.md`: a beginner-friendly Chinese self-media package written as an honest first-Skill learning and growth story, not as an expert-only product launch.
+
+The video kit must contain:
+
+- a plain-language glossary for Agent, Skill, Agent Skill, audit, diff, hash, approval token, backup, and rollback;
+- a recommended 8–12 minute long-video structure with a complete first-person spoken script;
+- a 60–90 second short-video version and an opening hook that does not overpromise;
+- a step-by-step screen-demo runbook pairing every screen action with narration, expected output, and a fallback if the command or approval gate differs;
+- the story arc: why one conversation is not enough, why the Skill was built, what failed during the real Starter test, how the safety design changed, and what the before/after audit proves;
+- installation and usage instructions suitable for a first-time GitHub and Codex Skill user;
+- at least five title options, cover-text options, a platform description, chapter timestamps, suggested tags, a pinned comment, a GitHub call to action, and a beginner FAQ;
+- transparent limitations and disclosures: legal attribution can remain, P1 identifiers may remain, neutral placeholders are not a production brand, the purchased source is not published, and AI assisted the design and implementation.
+
+The tone must be conversational, patient, and concrete. It should share decisions, mistakes, and learning rather than imply effortless automation. Every technical term must be explained before it is used as proof of safety or effectiveness.
+
+The public Skill, example, and video kit must pass a private-name and live-looking-secret scan before GitHub publication.
+
+## Private Acceptance Scope
+
+After implementation, rerun the audit against the unchanged Starter. The recommended preview will:
+
+- retain authentication, billing, credits, AI generation, admin, docs, and chat/image/video demo capabilities;
+- retain LICENSE and P1 plan/payment/auth/storage identifiers;
+- remove fabricated testimonial presentation and obsolete source-course promotion through explicitly approved path deletions and semantic edits;
+- replace user-facing brand, repository, social, SEO, email, documentation, and package residue with the confirmed neutral profile;
+- retain local demo media while renaming source-branded asset paths and updating references;
+- preserve tests, replacing only source-specific fixture values where necessary.
+
+The Starter is modified only after the user approves the exact current preview diff and token. After apply, run `pnpm lint`, `pnpm test`, `pnpm build`, and the residue verifier. Unexpected P3 residue returns to a new preview cycle.
+
+## Test Strategy
+
+Use test-driven development. Required tests cover:
+
+- valid deletion and replacement of exact text line ranges in the preview copy while the source remains byte-identical;
+- stale or malformed hashes, invalid ranges, overlap, traversal, symlinks, binaries, ignored/secret/legal paths, and P0/P1 overlap;
+- conflicts with finding-based actions and multiple bottom-up edits in one file;
+- token changes when semantic intent or result changes;
+- tampered preview and changed project rejection during apply;
+- backup, rollback, reverse diff, report redaction, and private replacement non-disclosure;
+- the complete existing test suite and the private Starter audit/preview lifecycle.
+
+## Success Criteria
+
+- A semantic cleanup can remove a component import/usage or an obsolete copy block without direct project edits.
+- Protected findings cannot be changed through the new interface.
+- The preview is deterministic and the approval token binds the exact result.
+- The real Starter remains unchanged until gate two.
+- The post-apply Starter validations pass and remaining findings are explicitly documented.
+- The GitHub release contains the generic Skill, sanitized evidence, and Chinese video materials without private-source leakage.
+
+## Non-Goals
+
+- No Windows support in v0.1.
+- No binary content editing, fuzzy patching, arbitrary shell hooks, or direct preview-tree mutation.
+- No automatic LICENSE rewriting or P1 migration.
+- No invented production brand or automatic GitHub publication.
