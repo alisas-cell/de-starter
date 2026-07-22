@@ -22,7 +22,11 @@ Replace `YOUR_ACCOUNT` with the repository owner after publication.
 $de-starter Audit this repository and show the report and proposed diff before making changes.
 ```
 
-The Skill discovers source identities, asks for a real brand or neutral placeholders, produces an audit, records Demo/sample decisions and explicitly scoped semantic edits, generates a project-external preview, stops for approval, applies only the approved token, validates the project, and scans again. Semantic edits require an audited file hash, inclusive line range, replacement, and a named purpose at gate one. P0 lines remain immutable; a P1-overlapping range additionally requires approved nonempty migration and rollback plans. Safe metadata records the migration-protection state in `semantic-edits.json` for gate two without exposing replacement or plan text. If an approved rename needs new parent directories, `apply` creates them exclusively through no-follow descriptors after the final checks, records them in `restore.json`, and removes only transaction-owned empty parents during rollback.
+The Skill discovers source identities, asks for a real brand or neutral placeholders, produces separate file and source-named-directory audits, records Demo/sample decisions and explicitly scoped semantic edits, generates a project-external preview, stops for approval, applies only the approved token, validates the project, and scans again. Semantic edits require an audited file hash, inclusive line range, replacement, and a named purpose at gate one. P0 lines remain immutable; a P1-overlapping range additionally requires approved nonempty migration and rollback plans. Safe metadata records the migration-protection state in `semantic-edits.json` for gate two without exposing replacement or plan text.
+
+`cleanup_empty_dirs` is a separate permission. The directory must have an exact audit finding and explicit approval, and it must already be empty or become empty only through approved descendant operations. Apply never substitutes `rmdir` or global empty-directory cleanup: it binds directory state and identity to the preview token, then moves the exact directory into external backup with no-clobber transaction and rollback evidence. Ordinary unnamed empty directories remain untouched.
+
+If an approved rename needs new parent directories, `apply` creates them exclusively through no-follow descriptors after the final checks, records them in `restore.json`, and removes only transaction-owned empty parents during rollback.
 
 ## Risk levels
 
@@ -44,9 +48,20 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q skills/de-starter/scripts
 ```
 
+Current public verification: 195/195 full regression tests, 13/13 CLI lifecycle tests, and a five-sample fresh-context pressure scenario improving from baseline 0/5 to final 5/5.
+
+## Public evidence
+
+- [Sanitized real-run acceptance summary](examples/sanitized-real-run-summary.md)
+- [真实 Starter 实验报告（中文）](docs/real-starter-experiment-report.zh-CN.md)
+- [视频镜头清单（中文）](docs/video-shot-list.zh-CN.md)
+- [自媒体发布完整包（中文）](docs/self-media-package.zh-CN.md)
+
 ## Contributing
 
-Use synthetic fixtures. Never commit purchased Starter code, proprietary assets, secrets, production identifiers, or reports containing private source excerpts.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Use synthetic fixtures. Never commit purchased Starter code, proprietary assets, secrets, production identifiers, exact tokens, or reports containing private source excerpts.
+
+For sensitive reports, follow [SECURITY.md](SECURITY.md) and use private vulnerability reporting.
 
 ## License
 

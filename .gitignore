@@ -1,5 +1,7 @@
 .worktrees/
 .superpowers/
+.planning/
+tasks/
 __pycache__/
 *.py[cod]
 .DS_Store

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>De-starter empty directory TDD evidence</title>
+  <style>
+    :root {
+      --ink:#18213b; --muted:#69738a; --paper:#f5f7fd; --panel:rgba(255,255,255,.96);
+      --line:#dce3f1; --violet:#6153d8; --violet-soft:#efedff;
+      --red:#b7463e; --red-soft:#fff0ee; --amber:#ad681f; --amber-soft:#fff3df;
+      --teal:#11898b; --teal-soft:#e2f7f3;
+    }
+    * { box-sizing:border-box; }
+    html,body { width:1600px; height:900px; margin:0; overflow:hidden; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    body { background-image:radial-gradient(circle at 8% 10%,rgba(97,83,216,.13),transparent 28%),radial-gradient(circle at 92% 88%,rgba(17,137,139,.11),transparent 29%),linear-gradient(rgba(97,83,216,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(97,83,216,.035) 1px,transparent 1px); background-size:auto,auto,40px 40px,40px 40px; }
+    main { width:100%; height:100%; padding:44px 58px 38px; display:grid; grid-template-rows:auto 1fr auto; gap:24px; }
+    header { display:flex; justify-content:space-between; align-items:end; }
+    .eyebrow { display:flex; align-items:center; gap:10px; color:var(--violet); font-size:14px; font-weight:850; letter-spacing:.14em; text-transform:uppercase; }
+    .eyebrow::before { content:""; width:10px; height:10px; border-radius:50%; background:var(--violet); box-shadow:0 0 0 6px rgba(97,83,216,.12); }
+    h1 { margin:10px 0 0; font-family:Georgia,"Times New Roman",serif; font-size:52px; line-height:1.02; letter-spacing:-.045em; }
+    .header-note { max-width:420px; margin:0 0 3px; color:var(--muted); text-align:right; font-size:17px; line-height:1.5; }
+    .stages { display:grid; grid-template-columns:1fr 1fr 1fr; gap:18px; align-items:stretch; }
+    .stage { position:relative; padding:26px 25px 22px; border:1px solid var(--line); border-radius:24px; background:var(--panel); box-shadow:0 16px 48px rgba(43,53,91,.08); }
+    .stage::after { content:"→"; position:absolute; z-index:2; right:-28px; top:49%; width:36px; height:36px; display:grid; place-items:center; color:var(--violet); background:var(--paper); border-radius:50%; font-size:28px; font-weight:900; }
+    .stage:last-child::after { display:none; }
+    .stage.red { border-color:#efc4c0; background:linear-gradient(180deg,var(--red-soft),white 45%); }
+    .stage.review { border-color:#efd4ad; background:linear-gradient(180deg,var(--amber-soft),white 45%); }
+    .stage.green { border-color:#bde7df; background:linear-gradient(180deg,var(--teal-soft),white 45%); }
+    .top { display:flex; justify-content:space-between; align-items:center; }
+    .badge { padding:8px 12px; border-radius:999px; font-size:13px; font-weight:900; letter-spacing:.08em; }
+    .red .badge { color:var(--red); background:#ffdcd8; }
+    .review .badge { color:var(--amber); background:#ffe3b8; }
+    .green .badge { color:var(--teal); background:#c9eee7; }
+    .step { color:var(--muted); font-size:13px; font-weight:800; }
+    .metric { margin:32px 0 8px; font-family:Georgia,"Times New Roman",serif; font-size:66px; line-height:1; letter-spacing:-.045em; }
+    .red .metric { color:var(--red); } .review .metric { color:var(--amber); } .green .metric { color:var(--teal); }
+    .label { min-height:30px; color:var(--muted); font-size:15px; font-weight:750; }
+    h2 { margin:26px 0 10px; font-size:22px; }
+    p { margin:0; color:var(--muted); font-size:15px; line-height:1.55; }
+    code { padding:2px 7px; border-radius:7px; color:#4b418f; background:var(--violet-soft); font-family:"SFMono-Regular",Consolas,monospace; font-size:.92em; }
+    .proofs { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
+    .proof { min-height:76px; display:flex; align-items:center; gap:14px; padding:15px 18px; border-radius:18px; background:white; border:1px solid var(--line); }
+    .icon { flex:0 0 38px; width:38px; height:38px; display:grid; place-items:center; border-radius:50%; color:white; background:var(--violet); font-weight:900; }
+    .proof strong { font-size:16px; } .proof span { display:block; margin-top:4px; color:var(--muted); font-size:13px; line-height:1.35; }
+    .proof .icon { display:grid; margin-top:0; color:white; font-size:16px; line-height:1; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="eyebrow">TDD + independent review</div>
+        <h1>测试全绿，不等于已经足够安全</h1>
+      </div>
+      <p class="header-note">通用 Skill 的目录审计能力<br />只展示合成测试与公开安全结果</p>
+    </header>
+    <section class="stages">
+      <article class="stage red">
+        <div class="top"><span class="badge">RED</span><span class="step">01 · 能力缺失</span></div>
+        <div class="metric">ImportError</div>
+        <div class="label">旧运行时没有目录清点接口</div>
+        <h2>空目录对文件扫描器不可见</h2>
+        <p>合成路径 <code>public/starter/</code> 无法进入审计，所以也不能进入审批、预览和回滚。</p>
+      </article>
+      <article class="stage review">
+        <div class="top"><span class="badge">REVIEW</span><span class="step">02 · 测试后复核</span></div>
+        <div class="metric">126 / 126</div>
+        <div class="label">测试通过，但独立审查没有放行</div>
+        <h2>发现竞态与权限边界</h2>
+        <p>审查要求补上并发新增、符号链接替换、敏感目录不透明处理和特殊权限往返测试。</p>
+      </article>
+      <article class="stage green">
+        <div class="top"><span class="badge">GREEN</span><span class="step">03 · 加固完成</span></div>
+        <div class="metric">130 / 130</div>
+        <div class="label">完整测试通过 · 复审零问题</div>
+        <h2>描述符锚定的稳定快照</h2>
+        <p>目录身份或子项在扫描中变化就失败关闭；文件发现与目录残留继续独立统计。</p>
+      </article>
+    </section>
+    <footer class="proofs">
+      <div class="proof"><span class="icon">✓</span><div><strong>真实 RED 证据</strong><span>先证明旧能力缺失，再写实现</span></div></div>
+      <div class="proof"><span class="icon">↺</span><div><strong>审查驱动新测试</strong><span>Critical / Important 全部转成回归用例</span></div></div>
+      <div class="proof"><span class="icon">0</span><div><strong>独立复审通过</strong><span>Critical 0 · Important 0 · Minor 0</span></div></div>
+    </footer>
+  </main>
+</body>
+</html>

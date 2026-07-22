@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>De-starter real acceptance result</title>
+  <style>
+    :root { --ink:#17213a; --muted:#69738a; --paper:#f5f7fd; --panel:rgba(255,255,255,.97); --line:#dce3f1; --violet:#6153d8; --violet-soft:#efedff; --teal:#11898b; --teal-soft:#e2f7f3; --amber:#ad681f; --amber-soft:#fff3df; }
+    * { box-sizing:border-box; }
+    html,body { width:1600px; height:900px; margin:0; overflow:hidden; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    body { background-image:radial-gradient(circle at 8% 10%,rgba(97,83,216,.13),transparent 28%),radial-gradient(circle at 92% 88%,rgba(17,137,139,.12),transparent 29%),linear-gradient(rgba(97,83,216,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(97,83,216,.035) 1px,transparent 1px); background-size:auto,auto,40px 40px,40px 40px; }
+    main { width:100%; height:100%; padding:43px 58px 38px; display:grid; grid-template-rows:auto 1fr auto; gap:24px; }
+    header { display:flex; justify-content:space-between; align-items:end; }
+    .eyebrow { display:flex; align-items:center; gap:10px; color:var(--teal); font-size:14px; font-weight:850; letter-spacing:.14em; text-transform:uppercase; }
+    .eyebrow::before { content:""; width:10px; height:10px; border-radius:50%; background:var(--teal); box-shadow:0 0 0 6px rgba(17,137,139,.12); }
+    h1 { margin:10px 0 0; font-family:Georgia,"Times New Roman",serif; font-size:52px; line-height:1.03; letter-spacing:-.045em; }
+    .approved { display:flex; align-items:center; gap:12px; padding:12px 18px; border:1px solid #bde7df; border-radius:999px; color:var(--teal); background:var(--teal-soft); font-size:15px; font-weight:900; }
+    .approved::before { content:"✓"; width:28px; height:28px; display:grid; place-items:center; border-radius:50%; color:white; background:var(--teal); }
+    .grid { display:grid; grid-template-columns:1.12fr .88fr; gap:22px; min-height:0; }
+    .card { padding:28px 30px; border:1px solid var(--line); border-radius:25px; background:var(--panel); box-shadow:0 16px 48px rgba(43,53,91,.08); }
+    .card h2 { margin:0; font-size:23px; }
+    .card .sub { margin-top:7px; color:var(--muted); font-size:15px; }
+    .result { display:grid; grid-template-columns:1fr 1fr; gap:17px; margin-top:24px; }
+    .result-box { min-height:205px; padding:24px; border:1px solid var(--line); border-radius:22px; background:#fafbfe; }
+    .result-box.directory { border-color:#bde7df; background:linear-gradient(145deg,var(--teal-soft),white 74%); }
+    .kicker { color:var(--muted); font-size:13px; font-weight:900; letter-spacing:.1em; text-transform:uppercase; }
+    .number { margin:18px 0 9px; font-family:Georgia,"Times New Roman",serif; font-size:66px; line-height:1; letter-spacing:-.05em; }
+    .number .arrow { padding:0 8px; color:var(--violet); font-size:43px; vertical-align:9px; }
+    .directory .number { color:var(--teal); }
+    .label { color:var(--muted); font-size:15px; line-height:1.5; }
+    .risk { margin-top:18px; display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+    .risk div { padding:13px 12px; border:1px solid var(--line); border-radius:14px; background:white; text-align:center; }
+    .risk strong { display:block; font-size:22px; } .risk span { display:block; margin-top:4px; color:var(--muted); font-size:12px; font-weight:800; }
+    .evidence { display:grid; grid-template-rows:auto 1fr; gap:18px; }
+    .proofs { display:grid; gap:12px; margin-top:21px; }
+    .proof { display:flex; align-items:center; gap:14px; padding:15px 17px; border:1px solid var(--line); border-radius:17px; background:#fafbfe; }
+    .icon { flex:0 0 36px; width:36px; height:36px; display:grid; place-items:center; border-radius:50%; color:white; background:var(--violet); font-weight:900; }
+    .proof strong { display:block; font-size:16px; } .proof span { display:block; margin-top:4px; color:var(--muted); font-size:13px; }
+    .validation { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .validation div { padding:18px; border-radius:18px; border:1px solid var(--line); background:white; }
+    .validation b { display:block; color:var(--teal); font-family:Georgia,"Times New Roman",serif; font-size:30px; }
+    .validation span { display:block; margin-top:6px; color:var(--muted); font-size:13px; line-height:1.4; }
+    footer { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:14px; }
+    footer strong { color:var(--ink); }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="eyebrow">Real Starter acceptance · complete</div>
+        <h1>文件残留可解释，目录残留归零</h1>
+      </div>
+      <div class="approved">精确审批 · 事务化执行 · 可恢复</div>
+    </header>
+    <section class="grid">
+      <article class="card">
+        <h2>真实验收效果</h2>
+        <p class="sub">两套指标分别计算，不用“删除一个目录”美化文件发现数字。</p>
+        <div class="result">
+          <div class="result-box">
+            <div class="kicker">File findings</div>
+            <div class="number">523<span class="arrow">→</span>227</div>
+            <div class="label">剩余项全部进入 P0–P3 解释与保留范围</div>
+          </div>
+          <div class="result-box directory">
+            <div class="kicker">Directory residue</div>
+            <div class="number">1<span class="arrow">→</span>0</div>
+            <div class="label">只清理获批的 source-named 空目录，普通父目录保留</div>
+          </div>
+        </div>
+        <div class="risk">
+          <div><strong>132</strong><span>P0 保留</span></div>
+          <div><strong>35</strong><span>P1 保留</span></div>
+          <div><strong>21</strong><span>P2 保留</span></div>
+          <div><strong>39</strong><span>P3 保留</span></div>
+        </div>
+      </article>
+      <section class="evidence">
+        <article class="card">
+          <h2>执行证据</h2>
+          <div class="proofs">
+            <div class="proof"><span class="icon">↗</span><div><strong>外部事务备份</strong><span>目录被原子移动，不是直接丢弃</span></div></div>
+            <div class="proof"><span class="icon">↺</span><div><strong>恢复材料齐全</strong><span>restore manifest · reverse diff · apply result</span></div></div>
+            <div class="proof"><span class="icon">0</span><div><strong>无扩大范围</strong><span>0 文件变化 · 0 普通删除 · 0 重命名</span></div></div>
+          </div>
+        </article>
+        <article class="validation">
+          <div><b>PASS</b><span>lint 与 Webpack production build；71 个静态页面生成</span></div>
+          <div><b>0 new</b><span>没有新增测试失败；既有 2 条 docs 链接断言如实保留</span></div>
+        </article>
+      </section>
+    </section>
+    <footer><span><strong>De-starter</strong> · audit → approve → preview → approve → apply → verify</span><span>公开安全画面 · 不含源码、私有路径、身份或令牌</span></footer>
+  </main>
+</body>
+</html>

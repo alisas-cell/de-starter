@@ -1,0 +1,41 @@
+name: Classification or false-positive report
+description: Improve source discovery or P0–P3 classification with synthetic evidence
+title: "[Classification]: "
+labels: ["classification"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Replace all real product and seller names with synthetic values before submitting.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Finding type
+      options:
+        - source identity candidate
+        - P0 protected
+        - P1 compatibility-sensitive
+        - P2 user decision
+        - P3 display or metadata
+        - source-named directory
+    validations:
+      required: true
+  - type: textarea
+    id: synthetic
+    attributes:
+      label: Synthetic example and surrounding context
+    validations:
+      required: true
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Expected classification and rationale
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: This report contains only synthetic identities and no private source excerpts, paths, credentials, or tokens.
+          required: true
