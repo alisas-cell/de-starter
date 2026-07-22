@@ -1515,6 +1515,182 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertFalse(source.is_symlink())
         self.assertTrue((root / "public").is_dir())
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_preview_cleanup_isolates_a_terminal_swapped_after_final_check(self) -> None:
+        root, run, _audit = self.cleanup_fixture()
+        source_object = root / "source-object"
+        source_object.mkdir()
+        preserved = source_object / "source-preserved.txt"
+        preserved.write_text("preserve this source object\n", encoding="utf-8")
+        audit = scan_project(root, ["starter"])
+        preview_cleanup = run / "preview/public/starter"
+        original_rename = preview_module.os.rename
+        swapped = []
+
+        def swap_terminal_before_isolation(source, destination, *args, **kwargs):
+            if (
+                not swapped
+                and source == "starter"
+                and kwargs.get("src_dir_fd") is not None
+            ):
+                original_rename(
+                    str(preview_cleanup), str(run / "preview/public/original"),
+                )
+                original_rename(str(source_object), str(preview_cleanup))
+                swapped.append(True)
+            return original_rename(source, destination, *args, **kwargs)
+
+        with patch(
+            "destarter_lib.preview.os.rename",
+            side_effect=swap_terminal_before_isolation,
+        ):
+            with self.assertRaisesRegex(ValueError, "cleanup"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(swapped)
+        self.assertFalse((run / "manifest.json").exists())
+        preserved_copies = list(run.rglob("source-preserved.txt"))
+        isolated_copies = [
+            path for path in preserved_copies
+            if path.parent.name == "starter"
+            or any(
+                part.startswith(".destarter-preview-cleanup-")
+                for part in path.parts
+            )
+        ]
+        self.assertEqual(len(isolated_copies), 1)
+        self.assertEqual(
+            isolated_copies[0].read_text(encoding="utf-8"),
+            "preserve this source object\n",
+        )
+
+    def test_preview_cleanup_preserves_foreign_terminal_and_staging_after_failure(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        preview_cleanup = run / "preview/public/starter"
+        foreign_identity = []
+
+        def create_foreign_terminal(*_args, **_kwargs):
+            preview_cleanup.mkdir()
+            info = preview_cleanup.lstat()
+            foreign_identity.append((info.st_dev, info.st_ino))
+            raise ValueError("injected isolated cleanup validation failure")
+
+        with patch(
+            "destarter_lib.preview._verify_isolated_preview_cleanup_dir",
+            side_effect=create_foreign_terminal,
+        ):
+            with self.assertRaisesRegex(ValueError, "isolated cleanup"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertFalse((run / "manifest.json").exists())
+        self.assertTrue(foreign_identity)
+        info = preview_cleanup.lstat()
+        self.assertEqual((info.st_dev, info.st_ino), foreign_identity[0])
+        staging_dirs = [
+            path for path in run.iterdir()
+            if path.name.startswith(".destarter-preview-cleanup-")
+        ]
+        self.assertEqual(len(staging_dirs), 1)
+        self.assertTrue(any(
+            path.name.startswith("cleanup-")
+            for path in staging_dirs[0].iterdir()
+        ))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_preview_cleanup_refuses_an_ancestor_swap_after_final_check(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        source_guard = root / "public/source-guard.txt"
+        source_guard.write_text("source remains intact\n", encoding="utf-8")
+        audit = scan_project(root, ["starter"])
+        preview_public = run / "preview/public"
+        original_rename = preview_module.os.rename
+        swapped = []
+
+        def swap_ancestor_before_isolation(source, destination, *args, **kwargs):
+            if (
+                not swapped
+                and source == "starter"
+                and kwargs.get("src_dir_fd") is not None
+            ):
+                original_rename(
+                    str(preview_public), str(run / "preview/public-displaced"),
+                )
+                preview_public.symlink_to(root / "public", target_is_directory=True)
+                swapped.append(True)
+            return original_rename(source, destination, *args, **kwargs)
+
+        with patch(
+            "destarter_lib.preview.os.rename",
+            side_effect=swap_ancestor_before_isolation,
+        ):
+            with self.assertRaisesRegex(ValueError, "cleanup"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(swapped)
+        self.assertFalse((run / "manifest.json").exists())
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertEqual(source_guard.read_text(encoding="utf-8"), "source remains intact\n")
+        self.assertTrue(preview_public.is_symlink())
+
+    def test_preview_rejects_source_drift_after_cleanup_before_manifest(self) -> None:
+        root, run, _audit = self.cleanup_fixture()
+        source_object = root / "source-object.txt"
+        source_object.write_text("do not bind stale source state\n", encoding="utf-8")
+        audit = scan_project(root, ["starter"])
+        original_check = preview_module._ensure_no_symlinks
+        checks = []
+        mutated = []
+
+        def move_source_after_cleanup(path):
+            result = original_check(path)
+            checks.append(path)
+            if len(checks) == 2 and not mutated:
+                source_object.rename(root / "source-object-moved.txt")
+                mutated.append(True)
+            return result
+
+        with patch(
+            "destarter_lib.preview._ensure_no_symlinks",
+            side_effect=move_source_after_cleanup,
+        ):
+            with self.assertRaisesRegex(ValueError, "source changed during preview"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(mutated)
+        self.assertFalse((run / "manifest.json").exists())
+        self.assertEqual(
+            (root / "source-object-moved.txt").read_text(encoding="utf-8"),
+            "do not bind stale source state\n",
+        )
+
     def test_preview_refuses_cleanup_when_a_child_is_not_owned_or_safe(self) -> None:
         cases = ("leftover.txt", "node_modules", ".env", "symlink", "file")
         for case in cases:

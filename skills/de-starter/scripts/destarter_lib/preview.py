@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import stat
+import uuid
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
@@ -25,6 +26,7 @@ from .decisions import PLACEHOLDER_PROFILE
 
 
 _OWNER_FILE = ".destarter-preview-owner.json"
+_CLEANUP_STAGING_OWNER = ".destarter-preview-cleanup-owner.json"
 _PROTECTED_STEMS = {"license", "copying", "notice"}
 _SECRET_VALUE_RE = re.compile(r"(?i)(secret|token|api[_-]?key|password|^sk_)")
 
@@ -106,6 +108,21 @@ def _safe_file_records(root: Path, excluded_names: Iterable[str] = ()) -> List[D
 
 def _snapshot_hash(records: List[Dict[str, object]]) -> str:
     return _token({"files": records})
+
+
+def _assert_source_unchanged(
+    root: Path,
+    source_records: List[Dict[str, object]],
+    source_tree_hash: str,
+    source_state_hash: str,
+) -> None:
+    current_records = _safe_file_records(root)
+    if (
+        current_records != source_records
+        or _snapshot_hash(current_records) != source_tree_hash
+        or _state_hash(root) != source_state_hash
+    ):
+        raise ValueError("source changed during preview")
 
 
 def _state_hash(root: Path, excluded_names: Iterable[str] = ()) -> str:
@@ -314,12 +331,147 @@ def _assert_pinned_preview_cleanup_chain(
         os.close(current_fd)
 
 
+def _entry_absent(parent_fd: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        return False
+    except FileNotFoundError:
+        return True
+
+
+def _write_cleanup_staging_owner(
+    staging_fd: int, project_root: Path,
+) -> None:
+    payload = json.dumps(
+        {"project_root": str(project_root)}, sort_keys=True,
+    ).encode("utf-8") + b"\n"
+    try:
+        descriptor = os.open(
+            _CLEANUP_STAGING_OWNER,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=staging_fd,
+        )
+    except OSError as error:
+        raise ValueError("cannot mark cleanup staging as owned") from error
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+    except OSError as error:
+        raise ValueError("cannot write cleanup staging owner") from error
+    finally:
+        os.close(descriptor)
+
+
+def _open_preview_cleanup_staging(run: Path, project_root: Path) -> int:
+    """Create one unique, owner-marked staging directory per preview attempt."""
+    try:
+        run_fd = os.open(
+            str(run), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise ValueError("cannot pin run directory for cleanup staging") from error
+    try:
+        for _attempt in range(8):
+            name = ".destarter-preview-cleanup-{}".format(uuid.uuid4().hex)
+            try:
+                os.mkdir(name, 0o700, dir_fd=run_fd)
+            except FileExistsError:
+                continue
+            try:
+                staging_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=run_fd,
+                )
+            except OSError as error:
+                raise ValueError("cannot pin cleanup staging directory") from error
+            try:
+                identity = _directory_identity_at(
+                    run_fd, name, "cleanup staging",
+                )
+                opened = os.fstat(staging_fd)
+                if identity != (opened.st_dev, opened.st_ino):
+                    raise ValueError("cleanup staging directory changed while being pinned")
+                _write_cleanup_staging_owner(staging_fd, project_root)
+                return staging_fd
+            except Exception:
+                os.close(staging_fd)
+                raise
+        raise ValueError("cannot allocate unique cleanup staging directory")
+    finally:
+        os.close(run_fd)
+
+
+def _cleanup_staging_name(relpath: str) -> str:
+    return "cleanup-{}".format(sha256(relpath.encode("utf-8")).hexdigest())
+
+
+def _isolate_preview_cleanup_dir(
+    root_fd: int,
+    parent_fd: int,
+    parts: Tuple[str, ...],
+    identities: Tuple[Tuple[int, int], ...],
+    staging_fd: int,
+    relpath: str,
+) -> str:
+    """Atomically move the terminal entry out of the preview before rechecking it."""
+    _assert_pinned_preview_cleanup_chain(root_fd, parts, identities)
+    if _directory_identity_at(parent_fd, parts[-1], relpath) != identities[-1]:
+        raise ValueError("cleanup preview directory changed before isolation: {}".format(relpath))
+    if os.fstat(parent_fd).st_dev != os.fstat(staging_fd).st_dev:
+        raise ValueError("cleanup staging must be on the preview filesystem")
+    staging_name = _cleanup_staging_name(relpath)
+    if not _entry_absent(staging_fd, staging_name):
+        raise ValueError("cleanup staging entry already exists")
+    try:
+        os.rename(
+            parts[-1], staging_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=staging_fd,
+        )
+    except OSError as error:
+        raise ValueError("cannot isolate cleanup preview directory: {}".format(relpath)) from error
+    return staging_name
+
+
+def _verify_isolated_preview_cleanup_dir(
+    staging_fd: int,
+    staging_name: str,
+    expected_identity: Tuple[int, int],
+    state: Mapping[str, object],
+    relpath: str,
+) -> None:
+    actual = _directory_identity_at(staging_fd, staging_name, relpath)
+    if actual != expected_identity:
+        raise ValueError("isolated cleanup directory changed: {}".format(relpath))
+    descriptor, opened_identity = _open_pinned_preview_directory(
+        staging_fd, staging_name, relpath,
+    )
+    try:
+        if opened_identity != expected_identity:
+            raise ValueError("isolated cleanup directory changed: {}".format(relpath))
+        info = os.fstat(descriptor)
+        if stat.S_IMODE(info.st_mode) != state["mode"]:
+            raise ValueError("isolated cleanup directory mode changed: {}".format(relpath))
+        with os.scandir(descriptor) as entries:
+            if next(entries, None) is not None:
+                raise ValueError("isolated cleanup directory is not empty: {}".format(relpath))
+        if _directory_identity_at(staging_fd, staging_name, relpath) != expected_identity:
+            raise ValueError("isolated cleanup directory changed during inspection: {}".format(relpath))
+    finally:
+        os.close(descriptor)
+
+
 def _remove_preview_cleanup_dir(
     preview_root: Path,
+    staging_fd: int,
     relpath: str,
     state: Mapping[str, object],
 ) -> Dict[str, object]:
-    """Remove one explicitly approved directory after proving it is empty."""
+    """Isolate and prove one approved empty directory without deleting it."""
     root_fd, parent_fd, terminal_fd, parts, identities = _open_pinned_preview_cleanup_dir(
         preview_root, relpath,
     )
@@ -332,12 +484,19 @@ def _remove_preview_cleanup_dir(
                 raise ValueError("cleanup preview directory is not empty: {}".format(relpath))
         if (info.st_dev, info.st_ino) != identities[-1]:
             raise ValueError("cleanup preview directory changed during inspection: {}".format(relpath))
-        _assert_pinned_preview_cleanup_chain(root_fd, parts, identities)
-        if _directory_identity_at(parent_fd, parts[-1], relpath) != identities[-1]:
-            raise ValueError("cleanup preview directory changed before removal: {}".format(relpath))
-        os.rmdir(parts[-1], dir_fd=parent_fd)
-    except OSError as error:
-        raise ValueError("cannot inspect or remove cleanup preview directory: {}".format(relpath)) from error
+        staging_name = _isolate_preview_cleanup_dir(
+            root_fd, parent_fd, parts, identities, staging_fd, relpath,
+        )
+        _verify_isolated_preview_cleanup_dir(
+            staging_fd, staging_name, identities[-1], state, relpath,
+        )
+        if not _entry_absent(parent_fd, parts[-1]):
+            raise ValueError(
+                "cleanup preview terminal reappeared after isolation: {}".format(relpath)
+            )
+        _assert_pinned_preview_cleanup_chain(root_fd, parts[:-1], identities[:-1])
+    except Exception:
+        raise
     finally:
         os.close(terminal_fd)
         if parent_fd != root_fd:
@@ -559,10 +718,22 @@ def create_preview(
         else:
             raise ValueError("invalid delete path: {}".format(relpath))
 
-    cleanup_operations = [
-        _remove_preview_cleanup_dir(preview_root, relpath, cleanup_dir_states[relpath])
-        for relpath in cleanup
-    ]
+    cleanup_staging_fd = _open_preview_cleanup_staging(run, root) if cleanup else -1
+    try:
+        cleanup_operations = [
+            _remove_preview_cleanup_dir(
+                preview_root, cleanup_staging_fd, relpath,
+                cleanup_dir_states[relpath],
+            )
+            for relpath in cleanup
+        ]
+    finally:
+        if cleanup_staging_fd >= 0:
+            os.close(cleanup_staging_fd)
+    _ensure_no_symlinks(preview_root)
+    _assert_source_unchanged(
+        root, source_records, source_tree_hash, source_state_hash,
+    )
 
     source_hashes = {}
     for relpath in sorted(changed):
@@ -672,6 +843,9 @@ def create_preview(
             "semantic-edits.json",
         )
     }
+    _assert_source_unchanged(
+        root, source_records, source_tree_hash, source_state_hash,
+    )
     core = {
         "run_id": sha256(str(run).encode("utf-8")).hexdigest()[:16],
         "project_root": str(root), "preview_root": str(preview_root.resolve()),
