@@ -7,8 +7,8 @@ Fill every slot before any mandatory stop:
 - **Status:** no project files changed; P0 and LICENSE obligations retained; stop reason.
 - **Source:** candidates, evidence, recommendation, and request for the exact canonical source-term confirmation before audit.
 - **Brand:** ask the user to choose either a complete real profile (`product_name`, `short_name`, `url`, `domain`, `support_email`, `repository_url`, `owner`) or exact neutral placeholders: `product_name=Your Product`, `short_name=Your Product`, `url=https://example.com`, `domain=example.com`, `support_email=support@example.com`, `repository_url=https://github.com/your-org/your-product`, `owner=Your Company`.
-- **P1 / P3:** name already-visible P1 keys, payment/API identifiers, or routes separately from P3 display text. State each P1 is retained, or request its migration and rollback plans.
-- **P2 choices:** recommend and request confirmation for demo routes, sample content, testimonials, test data, and assets. Name every proposed deletion and request explicit approval. For every semantic edit, name its project-relative path and approved purpose; record its hash, inclusive range, replacement, and reason in `decisions.json` only after approval.
+- **P1 / P3:** name already-visible P1 keys, payment/API identifiers, or routes separately from P3 display text. State each P1 is retained, or request its migration and rollback plans for the exact finding action or semantic range.
+- **P2 choices:** recommend and request confirmation for demo routes, sample content, testimonials, test data, and assets. Name every proposed deletion and request explicit approval. For every semantic edit, name its project-relative path and approved purpose; record its hash, inclusive range, replacement, reason, and any required P1 migration/rollback plans in `decisions.json` only after approval.
 - **Next external preview:** “After source confirmation, audit, and gate-one decisions, I will create the external-run private `preview.diff` and other preview artifacts, show the exact current diff and approval token, then stop at gate two before editing.”
 
 Present artifacts and decisions in this order:

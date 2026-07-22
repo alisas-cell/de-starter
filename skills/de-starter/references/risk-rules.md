@@ -11,7 +11,7 @@ Classify by location, surrounding syntax, persistence, and dependencies. A keywo
 
 Precedence is P0, then P1, then P2, then P3. A payment key inside a Demo file remains P1. A source-author name inside LICENSE remains P0.
 
-P0 never enters actions, and any path containing a P0 finding is retained. Preserve all license obligations; ask when they are unclear. P1 has no action unless the user explicitly confirms both a migration plan and a rollback plan. Never delete a path containing P0 or P1 findings.
+P0 never enters actions, P0 lines cannot enter semantic edits, and any path containing a P0 finding is retained from whole-path operations. Preserve all license obligations; ask when they are unclear. P1 has no replacement action or overlapping semantic edit unless the user explicitly confirms both a migration plan and a rollback plan. A P1 semantic edit remains hash-bound and range-bound and cannot overlap a separate finding action. Never delete or rename a path containing P0 or P1 findings.
 
 Present P2 choices by category, including demo routes, sample content, testimonials, test data, and assets. Make a sensible P2 recommendation when the user delegates a choice, but require explicit confirmation before deletion. Record every selected category action in the decisions file.
 

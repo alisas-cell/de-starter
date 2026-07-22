@@ -25,7 +25,9 @@ Add `text_edits` to the allowed top-level `decisions.json` keys:
       "start_line": 12,
       "end_line": 15,
       "replacement": "",
-      "reason": "Remove the approved sample testimonial component usage"
+      "reason": "Remove the approved sample testimonial component usage",
+      "migration_plan": "required when the selected range overlaps P1",
+      "rollback_plan": "required when the selected range overlaps P1"
     }
   ]
 }
@@ -33,7 +35,7 @@ Add `text_edits` to the allowed top-level `decisions.json` keys:
 
 Line numbers are one-based and inclusive. An empty replacement deletes the selected lines. Insert-only edits, binary edits, fuzzy matching, and patch application are outside v0.1. Multiple edits in one file are allowed only when their original line ranges do not overlap.
 
-`expected_sha256` must equal both the audited file hash and the current project file hash. `reason` must be a nonempty, user-reviewable description. The replacement remains private inside the external run directory; public artifacts expose only safe aggregate metadata.
+`expected_sha256` must equal both the audited file hash and the current project file hash. `reason` must be a nonempty, user-reviewable description. `migration_plan` and `rollback_plan` are optional for ordinary semantic edits and both mandatory when the range overlaps P1. The replacement and plan text remain private inside the external run directory; public artifacts expose only safe aggregate metadata.
 
 ## Validation and Protection Rules
 
@@ -43,11 +45,12 @@ The decision loader must reject a semantic edit when any of these conditions hol
 - the path is a directory, binary file, ignored dependency/build path, secret file, LICENSE, NOTICE, COPYING, or another invariant-protected path;
 - the expected hash is malformed or differs from the audit;
 - the line range is invalid, outside the original file, or overlaps another semantic edit;
-- the range overlaps any P0 or P1 finding line;
+- the range overlaps any P0 finding line;
+- the range overlaps a P1 finding line without both a nonempty migration plan and a nonempty rollback plan;
 - the range overlaps an existing finding-based replacement action;
 - the replacement or reason has the wrong JSON type.
 
-P1 changes continue to use the existing finding action with explicit migration and rollback plans. Semantic edits cannot bypass that gate. P0 remains immutable.
+P1 changes may use either the existing finding action or a hash-bound semantic edit with explicit migration and rollback plans. Semantic edits cannot bypass that gate and cannot overlap a separately actioned finding. P0 remains immutable.
 
 The Skill must name every semantic-edit path and purpose at gate one. Deletions and renames retain their existing explicit-approval rules. Gate two remains the authority for the exact resulting bytes.
 
@@ -58,8 +61,8 @@ The Skill must name every semantic-edit path and purpose at gate one. Deletions 
 3. Apply existing finding replacements using original line and column coordinates.
 4. Apply semantic edits from the bottom of each file upward so original line coordinates remain stable.
 5. Apply approved renames and deletions.
-6. Generate the complete redacted `preview.diff`, preview hashes, protected/retained lists, placeholder report, and a safe `semantic-edits.json` containing only path, original range, reason, and before/after hashes.
-7. Bind semantic-edit intent metadata and the resulting preview file hashes into the approval token.
+6. Generate the complete redacted `preview.diff`, preview hashes, protected/retained lists, placeholder report, and a safe `semantic-edits.json` containing only path, original range, reason, before/after hashes, and the boolean `p1_migration_protected` marker. Do not expose replacement or plan text in this safe metadata.
+7. Bind semantic-edit intent metadata, including the exact private migration/rollback plans, and the resulting preview file hashes into the approval token.
 
 The original project is not written during this flow. Any source, audit, decision, preview, or manifest change invalidates the current approval token.
 
@@ -150,7 +153,7 @@ The Starter is modified only after the user approves the exact current preview d
 Use test-driven development. Required tests cover:
 
 - valid deletion and replacement of exact text line ranges in the preview copy while the source remains byte-identical;
-- stale or malformed hashes, invalid ranges, overlap, traversal, symlinks, binaries, ignored/secret/legal paths, and P0/P1 overlap;
+- stale or malformed hashes, invalid ranges, overlap, traversal, symlinks, binaries, ignored/secret/legal paths, P0 overlap, and P1 overlap without both plans;
 - conflicts with finding-based actions and multiple bottom-up edits in one file;
 - token changes when semantic intent or result changes;
 - tampered preview and changed project rejection during apply;
@@ -160,7 +163,7 @@ Use test-driven development. Required tests cover:
 ## Success Criteria
 
 - A semantic cleanup can remove a component import/usage or an obsolete copy block without direct project edits.
-- Protected findings cannot be changed through the new interface.
+- P0 findings cannot be changed; P1 findings change only through an explicitly migration-protected action or semantic range.
 - The preview is deterministic and the approval token binds the exact result.
 - The real Starter remains unchanged until gate two.
 - The post-apply Starter validations pass and remaining findings are explicitly documented.

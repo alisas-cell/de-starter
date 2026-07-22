@@ -43,7 +43,7 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertEqual(record["path"], "app/page.tsx")
         self.assertEqual(set(record), {
             "path", "start_line", "end_line", "reason",
-            "before_sha256", "after_sha256",
+            "before_sha256", "after_sha256", "p1_migration_protected",
         })
         self.assertEqual(
             record["before_sha256"],
@@ -171,6 +171,117 @@ class PreviewApplyTests(unittest.TestCase):
             )
         )
         self.assertNotIn(private, safe_metadata)
+
+    def test_p1_semantic_edit_marks_migration_protection_without_replacement(self) -> None:
+        root, run, _audit = self.semantic_fixture()
+        target = root / "settings.py"
+        target.write_text('PLAN_KEY = "starter_monthly"\n', encoding="utf-8")
+        audit = scan_project(root, ["starter"])
+        record = next(item for item in audit.files if item.relpath == "settings.py")
+        decisions_path = root.parent / "p1-semantic-decisions.json"
+        private = "private_replacement_value_7d8805"
+        migration = "Migrate stored plan keys before deploying"
+        rollback = "Restore the old key and audited file bytes"
+        decisions_path.write_text(json.dumps({
+            "brand_mode": "placeholder",
+            "brand_profile": {},
+            "actions": [],
+            "text_edits": [{
+                "path": "settings.py",
+                "expected_sha256": record.sha256,
+                "start_line": 1,
+                "end_line": 1,
+                "replacement": 'PLAN_KEY = "{}"\n'.format(private),
+                "reason": "Migrate the approved persisted plan identifier",
+                "migration_plan": migration,
+                "rollback_plan": rollback,
+            }],
+        }), encoding="utf-8")
+
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            load_decisions(decisions_path, audit, root),
+        )
+
+        metadata_text = (run / "semantic-edits.json").read_text(encoding="utf-8")
+        metadata = json.loads(metadata_text)
+        record = metadata["edits"][0]
+        self.assertTrue(record["p1_migration_protected"])
+        self.assertNotIn(private, metadata_text)
+        self.assertNotIn(migration, metadata_text)
+        self.assertNotIn(rollback, metadata_text)
+        self.assertIn(private, (Path(manifest.preview_root) / "settings.py").read_text())
+        preview_report = (run / "preview.md").read_text(encoding="utf-8")
+        self.assertIn("P1 migration-protected semantic edits: `1`", preview_report)
+        self.assertNotIn(private, preview_report)
+        self.assertNotIn(migration, preview_report)
+        self.assertNotIn(rollback, preview_report)
+
+        changed_payload = json.loads(decisions_path.read_text(encoding="utf-8"))
+        changed_payload["text_edits"][0]["migration_plan"] = (
+            "Migrate stored plan keys in a different approved sequence"
+        )
+        decisions_path.write_text(json.dumps(changed_payload), encoding="utf-8")
+        changed_plan_manifest = create_preview(
+            root,
+            root.parent / "run-with-changed-plan",
+            audit,
+            load_decisions(decisions_path, audit, root),
+        )
+        self.assertNotEqual(
+            manifest.approval_token,
+            changed_plan_manifest.approval_token,
+        )
+
+    def test_p1_semantic_edit_can_delete_approved_multiline_display_block(self) -> None:
+        root, run, _audit = self.semantic_fixture()
+        target = root / "components/legacy-offer.tsx"
+        target.parent.mkdir(exist_ok=True)
+        original = (
+            "export const legacyOffer = {\n"
+            '  planKey: "starter_monthly",\n'
+            '  label: "Legacy course offer",\n'
+            "};\n"
+        )
+        target.write_text(original, encoding="utf-8")
+        audit = scan_project(root, ["starter"])
+        record = next(
+            item for item in audit.files
+            if item.relpath == "components/legacy-offer.tsx"
+        )
+        decisions_path = root.parent / "p1-block-decisions.json"
+        decisions_path.write_text(json.dumps({
+            "brand_mode": "placeholder",
+            "brand_profile": {},
+            "actions": [],
+            "text_edits": [{
+                "path": "components/legacy-offer.tsx",
+                "expected_sha256": record.sha256,
+                "start_line": 1,
+                "end_line": 4,
+                "replacement": "",
+                "reason": "Remove the approved obsolete display block",
+                "migration_plan": "Redirect the old offer before deploying",
+                "rollback_plan": "Restore the block from the audited backup",
+            }],
+        }), encoding="utf-8")
+
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            load_decisions(decisions_path, audit, root),
+        )
+
+        self.assertEqual(target.read_text(encoding="utf-8"), original)
+        self.assertEqual(
+            (Path(manifest.preview_root) / "components/legacy-offer.tsx").read_text(),
+            "",
+        )
+        metadata = json.loads((run / "semantic-edits.json").read_text())
+        self.assertTrue(metadata["edits"][0]["p1_migration_protected"])
 
     def test_semantic_edit_rechecks_preimage_after_finding_replacement(self) -> None:
         root, run, _audit = self.semantic_fixture()

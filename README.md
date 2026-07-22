@@ -22,7 +22,7 @@ Replace `YOUR_ACCOUNT` with the repository owner after publication.
 $de-starter Audit this repository and show the report and proposed diff before making changes.
 ```
 
-The Skill discovers source identities, asks for a real brand or neutral placeholders, produces an audit, records Demo/sample decisions and explicitly scoped semantic edits, generates a project-external preview, stops for approval, applies only the approved token, validates the project, and scans again. Semantic edits require an audited file hash, inclusive line range, replacement, and a named purpose at gate one; their safe metadata is written to `semantic-edits.json` for gate two.
+The Skill discovers source identities, asks for a real brand or neutral placeholders, produces an audit, records Demo/sample decisions and explicitly scoped semantic edits, generates a project-external preview, stops for approval, applies only the approved token, validates the project, and scans again. Semantic edits require an audited file hash, inclusive line range, replacement, and a named purpose at gate one. P0 lines remain immutable; a P1-overlapping range additionally requires approved nonempty migration and rollback plans. Safe metadata records the migration-protection state in `semantic-edits.json` for gate two without exposing replacement or plan text.
 
 ## Risk levels
 

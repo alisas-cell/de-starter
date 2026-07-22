@@ -29,6 +29,7 @@ _TOP_LEVEL_KEYS = {
 _ACTION_KEYS = {"finding_id", "action", "replacement", "migration_plan", "rollback_plan"}
 _TEXT_EDIT_KEYS = {
     "path", "expected_sha256", "start_line", "end_line", "replacement", "reason",
+    "migration_plan", "rollback_plan",
 }
 _VALID_ACTIONS = {"keep", "replace"}
 _PROTECTED_FILE_STEMS = {"license", "copying", "notice"}
@@ -279,10 +280,13 @@ def _validate_text_edits(
     if len(audited_files) != len(audit.files):
         raise DecisionError("audit contains duplicate file records")
     findings = {item.finding_id: item for item in audit.findings}
-    protected_lines: Dict[str, Set[int]] = {}
+    p0_lines: Dict[str, Set[int]] = {}
+    p1_lines: Dict[str, Set[int]] = {}
     for finding in audit.findings:
-        if finding.risk in {RiskLevel.P0, RiskLevel.P1} and finding.line > 0:
-            protected_lines.setdefault(finding.relpath, set()).add(finding.line)
+        if finding.risk is RiskLevel.P0 and finding.line > 0:
+            p0_lines.setdefault(finding.relpath, set()).add(finding.line)
+        if finding.risk is RiskLevel.P1 and finding.line > 0:
+            p1_lines.setdefault(finding.relpath, set()).add(finding.line)
     action_lines: Dict[str, Set[int]] = {}
     for action in actions:
         finding = findings[action.finding_id]
@@ -317,8 +321,23 @@ def _validate_text_edits(
         reason = raw.get("reason")
         if not _non_empty_string(reason):
             raise DecisionError("text edit reason must be a non-empty string")
-        if _intersects(start_line, end_line, protected_lines.get(edit_path, set())):
-            raise DecisionError("text edit overlaps protected P0/P1 line: {}".format(edit_path))
+        migration = raw.get("migration_plan")
+        rollback = raw.get("rollback_plan")
+        p1_migration_protected = _intersects(
+            start_line, end_line, p1_lines.get(edit_path, set())
+        )
+        if _intersects(start_line, end_line, p0_lines.get(edit_path, set())):
+            raise DecisionError("text edit overlaps protected P0 line: {}".format(edit_path))
+        if p1_migration_protected and (
+            not _non_empty_string(migration) or not _non_empty_string(rollback)
+        ):
+            raise DecisionError(
+                "P1 text edit requires migration and rollback plans: {}".format(edit_path)
+            )
+        if migration is not None and not _non_empty_string(migration):
+            raise DecisionError("migration_plan must be a non-empty string")
+        if rollback is not None and not _non_empty_string(rollback):
+            raise DecisionError("rollback_plan must be a non-empty string")
         if _intersects(start_line, end_line, action_lines.get(edit_path, set())):
             raise DecisionError("text edit overlaps finding action: {}".format(edit_path))
         text, current_hash = _current_text(project_root, edit_path)
@@ -334,6 +353,9 @@ def _validate_text_edits(
             end_line=end_line,
             replacement=replacement,
             reason=reason,
+            migration_plan=migration,
+            rollback_plan=rollback,
+            p1_migration_protected=p1_migration_protected,
         ))
 
     ordered = sorted(edits, key=lambda item: (item.path, item.start_line, item.end_line))

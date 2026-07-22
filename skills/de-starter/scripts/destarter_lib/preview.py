@@ -336,6 +336,7 @@ def create_preview(
             "reason": edit.reason,
             "before_sha256": before_hash,
             "after_sha256": after_hash,
+            "p1_migration_protected": edit.p1_migration_protected,
         } for edit in edits)
 
     delete_tree_hashes = {relpath: _tree_hash(root, relpath) for relpath in deleted}
@@ -444,6 +445,9 @@ def create_preview(
                 "end_line": edit.end_line,
                 "replacement": edit.replacement,
                 "reason": edit.reason,
+                "migration_plan": edit.migration_plan,
+                "rollback_plan": edit.rollback_plan,
+                "p1_migration_protected": edit.p1_migration_protected,
             }
             for edit in decisions.text_edits
         ], key=lambda item: (item["path"], item["start_line"], item["end_line"])),
@@ -493,6 +497,9 @@ def create_preview(
         "# De-starter Preview", "", "- Brand mode: `{}`".format(decisions.brand_mode),
         "- Changed files: `{}`".format(len(preview_hashes)), "- Deleted paths: `{}`".format(len(deleted)),
         "- Renamed paths: `{}`".format(len(renames)), "- Approval token: `{}`".format(manifest.approval_token), "",
+        "- P1 migration-protected semantic edits: `{}`".format(sum(
+            edit.p1_migration_protected for edit in decisions.text_edits
+        )), "",
         "Review `audit.md`, `preview.diff`, `binary-changes.json`, `placeholders.json`, and `semantic-edits.json` before approval.", "",
     ]))
     return manifest

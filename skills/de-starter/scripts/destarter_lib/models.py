@@ -80,6 +80,9 @@ class TextEdit:
     end_line: int
     replacement: str
     reason: str
+    migration_plan: Optional[str] = None
+    rollback_plan: Optional[str] = None
+    p1_migration_protected: bool = False
 
 
 @dataclass

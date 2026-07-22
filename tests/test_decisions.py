@@ -77,19 +77,75 @@ class DecisionTests(unittest.TestCase):
             with self.assertRaisesRegex(DecisionError, "text edit hash"):
                 load_decisions(self.write_payload(tmp, payload), audit, root)
 
-    def test_text_edit_rejects_protected_p0_and_p1_lines(self) -> None:
+    def test_text_edit_rejects_p0_line_even_with_migration_and_rollback(self) -> None:
         page_finding = next(
             item for item in self.audit.findings
             if item.relpath == "app/demo/page.tsx" and item.line == 2
         )
-        for risk in (RiskLevel.P0, RiskLevel.P1):
-            with self.subTest(risk=risk):
-                audit = replace(
-                    self.audit,
-                    findings=[replace(page_finding, line=1, risk=risk)],
-                )
-                with self.assertRaisesRegex(DecisionError, "protected P0/P1 line"):
-                    load_decisions(self.write(self.text_edit_payload(audit)), audit, self.root)
+        audit = replace(
+            self.audit,
+            findings=[replace(page_finding, line=1, risk=RiskLevel.P0)],
+        )
+        payload = self.text_edit_payload(
+            audit,
+            migration_plan="Migrate the public identifier before release",
+            rollback_plan="Restore the audited bytes from backup",
+        )
+        with self.assertRaisesRegex(DecisionError, "protected P0 line"):
+            load_decisions(self.write(payload), audit, self.root)
+
+    def test_text_edit_requires_both_plans_to_overlap_p1_line(self) -> None:
+        page_finding = next(
+            item for item in self.audit.findings
+            if item.relpath == "app/demo/page.tsx" and item.line == 2
+        )
+        audit = replace(
+            self.audit,
+            findings=[replace(page_finding, line=1, risk=RiskLevel.P1)],
+        )
+        for plans in (
+            {},
+            {"migration_plan": "Migrate the public identifier before release"},
+            {"rollback_plan": "Restore the audited bytes from backup"},
+            {
+                "migration_plan": " ",
+                "rollback_plan": "Restore the audited bytes from backup",
+            },
+        ):
+            with self.subTest(plans=plans):
+                with self.assertRaisesRegex(
+                    DecisionError,
+                    "P1 text edit requires migration and rollback plans",
+                ):
+                    load_decisions(
+                        self.write(self.text_edit_payload(audit, **plans)),
+                        audit,
+                        self.root,
+                    )
+
+    def test_text_edit_allows_p1_line_with_both_plans(self) -> None:
+        page_finding = next(
+            item for item in self.audit.findings
+            if item.relpath == "app/demo/page.tsx" and item.line == 2
+        )
+        audit = replace(
+            self.audit,
+            findings=[replace(page_finding, line=1, risk=RiskLevel.P1)],
+        )
+        payload = self.text_edit_payload(
+            audit,
+            migration_plan="Migrate the public identifier before release",
+            rollback_plan="Restore the audited bytes from backup",
+        )
+        decisions = load_decisions(self.write(payload), audit, self.root)
+        self.assertEqual(
+            decisions.text_edits[0].migration_plan,
+            "Migrate the public identifier before release",
+        )
+        self.assertEqual(
+            decisions.text_edits[0].rollback_plan,
+            "Restore the audited bytes from backup",
+        )
 
     def test_text_edit_rejects_finding_action_overlap(self) -> None:
         finding = next(
@@ -102,6 +158,25 @@ class DecisionTests(unittest.TestCase):
         payload["actions"] = [{"finding_id": finding.finding_id, "action": "keep"}]
         with self.assertRaisesRegex(DecisionError, "overlaps finding action"):
             load_decisions(self.write(payload), self.audit, self.root)
+
+    def test_p1_text_edit_with_plans_still_rejects_finding_action_overlap(self) -> None:
+        page_finding = next(
+            item for item in self.audit.findings
+            if item.relpath == "app/demo/page.tsx" and item.line == 2
+        )
+        p1_finding = replace(page_finding, line=1, risk=RiskLevel.P1)
+        audit = replace(self.audit, findings=[p1_finding])
+        payload = self.text_edit_payload(
+            audit,
+            migration_plan="Migrate the public identifier before release",
+            rollback_plan="Restore the audited bytes from backup",
+        )
+        payload["actions"] = [{
+            "finding_id": p1_finding.finding_id,
+            "action": "keep",
+        }]
+        with self.assertRaisesRegex(DecisionError, "overlaps finding action"):
+            load_decisions(self.write(payload), audit, self.root)
 
     def test_text_edit_rejects_overlapping_ranges(self) -> None:
         payload = self.text_edit_payload()
