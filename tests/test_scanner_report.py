@@ -188,6 +188,20 @@ class ScannerReportTests(unittest.TestCase):
             self.assertEqual(finding.risk.value, "P2")
             self.assertIn("binary-or-path inventory", finding.evidence)
 
+    def test_hyphenated_demo_directory_is_inventoried_as_p2(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = copy_fixture("nextjs-starter", Path(tmp))
+            asset = root / ".asset-sources" / "starter-demo" / "still.png"
+            asset.parent.mkdir(parents=True)
+            asset.write_bytes(b"\x89PNG\r\n\x1a\n\x00synthetic")
+            audit = scan_project(root, ["Northstar"])
+            finding = next(
+                item for item in audit.findings
+                if item.relpath == ".asset-sources/starter-demo/still.png"
+            )
+            self.assertEqual(finding.risk.value, "P2")
+            self.assertIn("binary-or-path inventory", finding.evidence)
+
     def test_brand_in_binary_filename_is_reported(self) -> None:
         with TemporaryDirectory() as tmp:
             root = copy_fixture("nextjs-starter", Path(tmp))

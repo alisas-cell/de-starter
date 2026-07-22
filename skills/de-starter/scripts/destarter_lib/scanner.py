@@ -29,6 +29,14 @@ P2_PARTS = {
 }
 
 
+def _path_is_p2(relpath: str) -> bool:
+    for part in Path(relpath).parts:
+        words = re.split(r"[^a-z0-9]+", part.casefold())
+        if any(word in P2_PARTS for word in words):
+            return True
+    return False
+
+
 def _risk(relpath: str, line_text: str) -> Tuple[RiskLevel, str]:
     """Classify a match using the highest applicable risk level."""
     path = Path(relpath)
@@ -36,7 +44,7 @@ def _risk(relpath: str, line_text: str) -> Tuple[RiskLevel, str]:
         return RiskLevel.P0, "legal-or-copyright"
     if any(pattern.search(line_text) for pattern in P1_PATTERNS):
         return RiskLevel.P1, "possible-persisted-or-public-identifier"
-    if any(part.lower() in P2_PARTS for part in path.parts):
+    if _path_is_p2(relpath):
         return RiskLevel.P2, "user-decides-sample-content"
     return RiskLevel.P3, "display-or-metadata"
 
@@ -66,8 +74,7 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
     findings = []
 
     for record in files:
-        path = Path(record.relpath)
-        path_is_p2 = any(part.lower() in P2_PARTS for part in path.parts)
+        path_is_p2 = _path_is_p2(record.relpath)
 
         for term in terms:
             for match in re.finditer(re.escape(term), record.relpath, re.I):
