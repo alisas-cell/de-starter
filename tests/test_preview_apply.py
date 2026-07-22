@@ -637,6 +637,157 @@ class PreviewApplyTests(unittest.TestCase):
             )
             self.assertFalse((root / "public/product").exists())
 
+    def test_nested_parent_open_and_fchmod_failures_leave_no_dir_or_fd(self) -> None:
+        for failure in ("open", "fchmod"):
+            with self.subTest(failure=failure), TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                root = copy_fixture("nextjs-starter", base)
+                (root / "public").mkdir()
+                manifest = self._nested_rename_preview(root, base / "run")
+                descriptor_root = Path("/dev/fd")
+                before = (
+                    len(list(descriptor_root.iterdir()))
+                    if descriptor_root.is_dir() else None
+                )
+                injected = []
+
+                if failure == "open":
+                    real = os.open
+
+                    def fail_once(path, flags, *args, **kwargs):
+                        if (
+                            not injected
+                            and path == "product"
+                            and (root / "public/product").is_dir()
+                        ):
+                            injected.append(True)
+                            raise OSError("injected parent open failure")
+                        return real(path, flags, *args, **kwargs)
+
+                    patcher = patch(
+                        "destarter_lib.apply.os.open", side_effect=fail_once
+                    )
+                else:
+                    real = os.fchmod
+
+                    def fail_once(descriptor, mode):
+                        product = root / "public/product"
+                        if (
+                            not injected
+                            and product.is_dir()
+                            and os.fstat(descriptor).st_ino
+                            == product.stat().st_ino
+                        ):
+                            injected.append(True)
+                            raise OSError("injected parent fchmod failure")
+                        return real(descriptor, mode)
+
+                    patcher = patch(
+                        "destarter_lib.apply.os.fchmod", side_effect=fail_once
+                    )
+
+                with patcher, patch(
+                    "destarter_lib.apply._fd_support", return_value=None
+                ):
+                    with self.assertRaisesRegex(
+                        ApplyError, "refused before mutation"
+                    ):
+                        apply_preview(
+                            root, base / "run", manifest.approval_token
+                        )
+
+                self.assertTrue(injected)
+                self.assertFalse((root / "public/product").exists())
+                self.assertTrue((root / "app/demo/page.tsx").is_file())
+                self.assertFalse((base / "run/backup").exists())
+                if before is not None:
+                    self.assertLessEqual(
+                        len(list(descriptor_root.iterdir())), before
+                    )
+
+    def test_nested_parent_cleanup_failure_is_reported_as_rollback_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "public").mkdir()
+            manifest = self._nested_rename_preview(root, base / "run")
+            real_fchmod = os.fchmod
+            injected = []
+
+            def add_content_then_fail(descriptor, mode):
+                product = root / "public/product"
+                if (
+                    not injected
+                    and product.is_dir()
+                    and os.fstat(descriptor).st_ino == product.stat().st_ino
+                ):
+                    (product / "user.txt").write_text(
+                        "user data", encoding="utf-8"
+                    )
+                    injected.append(True)
+                    raise OSError("injected parent fchmod failure")
+                return real_fchmod(descriptor, mode)
+
+            with patch(
+                "destarter_lib.apply.os.fchmod",
+                side_effect=add_content_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    ApplyError, "rollback failed.*cleanup failed"
+                ):
+                    apply_preview(
+                        root, base / "run", manifest.approval_token
+                    )
+
+            self.assertTrue(injected)
+            self.assertEqual(
+                (root / "public/product/user.txt").read_text(encoding="utf-8"),
+                "user data",
+            )
+            self.assertTrue((root / "app/demo/page.tsx").is_file())
+
+    def test_nested_parent_cleanup_never_deletes_replacement_directory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "public").mkdir()
+            manifest = self._nested_rename_preview(root, base / "run")
+            real_fchmod = os.fchmod
+            injected = []
+            replacement_identity = []
+
+            def replace_then_fail(descriptor, mode):
+                product = root / "public/product"
+                if (
+                    not injected
+                    and product.is_dir()
+                    and os.fstat(descriptor).st_ino == product.stat().st_ino
+                ):
+                    product.rename(root / "public/product-displaced")
+                    product.mkdir()
+                    replacement_identity.append(product.stat().st_ino)
+                    injected.append(True)
+                    raise OSError("injected parent replacement")
+                return real_fchmod(descriptor, mode)
+
+            with patch(
+                "destarter_lib.apply.os.fchmod",
+                side_effect=replace_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    ApplyError, "rollback failed.*raced or replaced"
+                ):
+                    apply_preview(
+                        root, base / "run", manifest.approval_token
+                    )
+
+            self.assertEqual(
+                (root / "public/product").stat().st_ino,
+                replacement_identity[0],
+            )
+            self.assertTrue((root / "public/product-displaced").is_dir())
+            self.assertTrue((root / "app/demo/page.tsx").is_file())
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_nested_rename_never_follows_parent_symlink_race(self) -> None:
         with TemporaryDirectory() as tmp:

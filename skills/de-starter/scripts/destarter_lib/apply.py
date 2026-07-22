@@ -49,6 +49,10 @@ class ApplyError(RuntimeError):
     """The approved preview cannot be safely applied."""
 
 
+class DirectoryCreationCleanupError(ApplyError):
+    """A created directory could not be proved safe to remove."""
+
+
 @dataclass(frozen=True)
 class ObjectState:
     identity: Identity
@@ -782,13 +786,78 @@ def _exclusive_file(
 
 def _mkdir_exclusive(parent_fd: int, name: str, mode: int) -> Tuple[int, Identity]:
     os.mkdir(name, mode, dir_fd=parent_fd)
-    descriptor = os.open(
-        name,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        dir_fd=parent_fd,
-    )
-    os.fchmod(descriptor, mode)
-    return descriptor, _identity_from_stat(os.fstat(descriptor))
+    descriptor = -1
+    created_identity: Optional[Identity] = None
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode):
+            _fail("created directory was replaced before it could be pinned")
+        created_identity = _identity_from_stat(info)
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        opened_identity = _identity_from_stat(os.fstat(descriptor))
+        if opened_identity != created_identity:
+            _fail("created directory changed before it could be pinned")
+        os.fchmod(descriptor, mode)
+        if _identity_at(parent_fd, name) != opened_identity:
+            _fail("created directory changed while setting its mode")
+        return descriptor, opened_identity
+    except Exception as error:
+        close_error: Optional[OSError] = None
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError as failure:
+                close_error = failure
+        cleanup_error = _cleanup_failed_mkdir(
+            parent_fd, name, created_identity
+        )
+        if cleanup_error or close_error:
+            details = cleanup_error or "created directory was removed"
+            if close_error:
+                details = "{}; descriptor close failed: {}".format(
+                    details, close_error
+                )
+            raise DirectoryCreationCleanupError(
+                "directory creation cleanup failed for {}: {}; original "
+                "error: {}".format(name, details, error)
+            ) from error
+        raise
+
+
+def _cleanup_failed_mkdir(
+    parent_fd: int,
+    name: str,
+    created_identity: Optional[Identity],
+) -> Optional[str]:
+    """Remove only the empty directory identity observed after our mkdir."""
+    if created_identity is None:
+        return "created directory identity could not be captured"
+    descriptor = -1
+    try:
+        if _identity_at(parent_fd, name) != created_identity:
+            return "created directory was raced or replaced; preserved"
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        if _identity_from_stat(os.fstat(descriptor)) != created_identity:
+            return "created directory changed before cleanup; preserved"
+        if os.listdir(descriptor):
+            return "created directory is not empty; preserved"
+        if _identity_at(parent_fd, name) != created_identity:
+            return "created directory changed at cleanup boundary; preserved"
+        os.rmdir(name, dir_fd=parent_fd)
+        return None
+    except Exception as error:
+        return "created directory cleanup could not complete: {}".format(error)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _affected_paths(manifest: PreviewManifest) -> List[str]:
@@ -1823,6 +1892,16 @@ def apply_preview(
                 item.created is not None for item in transaction.outputs
             ) or bool(transaction.created_parents) or bool(transaction.artifacts)
             if not mutated:
+                if isinstance(error, DirectoryCreationCleanupError):
+                    cleanup = _cleanup_empty_backup(transaction)
+                    detail = "" if cleanup else (
+                        "; empty backup cleanup also failed"
+                    )
+                    raise ApplyError(
+                        "apply failed and rollback failed: {}{}".format(
+                            error, detail
+                        )
+                    ) from error
                 if not _cleanup_empty_backup(transaction):
                     raise ApplyError(
                         "apply refused before mutation but empty backup cleanup "
