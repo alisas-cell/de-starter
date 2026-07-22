@@ -84,14 +84,37 @@ The video kit must contain:
 - a recommended 8–12 minute long-video structure with a complete first-person spoken script;
 - a 60–90 second short-video version and an opening hook that does not overpromise;
 - a step-by-step screen-demo runbook pairing every screen action with narration, expected output, and a fallback if the command or approval gate differs;
-- the story arc: why one conversation is not enough, why the Skill was built, what failed during the real Starter test, how the safety design changed, and what the before/after audit proves;
+- a product-first story arc: what the Skill is, why an ordinary one-off conversation is not enough, what problems the Skill solves, its concrete capabilities, where it is safer or more convenient, who should use it, and what the before/after audit proves;
+- a concise secondary learning thread covering why the Skill was built, what failed during the real Starter test, and how that failure improved the safety design, without turning the video into a development tutorial;
 - installation and usage instructions suitable for a first-time GitHub and Codex Skill user;
 - at least five title options, cover-text options, a platform description, chapter timestamps, suggested tags, a pinned comment, a GitHub call to action, and a beginner FAQ;
 - transparent limitations and disclosures: legal attribution can remain, P1 identifiers may remain, neutral placeholders are not a production brand, the purchased source is not published, and AI assisted the design and implementation.
 
 The tone must be conversational, patient, and concrete. It should share decisions, mistakes, and learning rather than imply effortless automation. Every technical term must be explained before it is used as proof of safety or effectiveness.
 
+The recommended editorial balance is:
+
+- 60%: what the Skill is, why it is needed, problems solved, concrete functions, advantages, and suitable or unsuitable scenarios;
+- 25%: the sanitized real-Starter P0–P3 audit, proposed changes, retained protections, and verified before/after effect;
+- 10%: installation, invocation, the two approval gates, and how to read the output;
+- 5%: the creator's first-Skill learning and growth reflections.
+
+The capability explanation must cover, in beginner language:
+
+- source-identity discovery rather than blind replacement of the word `starter`;
+- P0 protection for licenses, copyright, possible secrets, and production data;
+- P1 protection for payment, plan, database, authentication, API, route, and environment identifiers unless migration and rollback are explicit;
+- P2 user decisions for demo routes, sample assets, testimonials, example content, tests, and other product-dependent material;
+- P3 replacement candidates such as visible brand copy, SEO, emails, README, documentation, social links, repository metadata, and package identity;
+- complete real-brand mode versus exact neutral-placeholder mode;
+- external read-only audit and preview, an exact diff and approval token, stale-source protection, backup, rollback, validation, and post-cleanup verification;
+- honest remaining-residue reporting instead of claiming that every literal occurrence can or should be removed.
+
+The video must also add useful material beyond the requested basics: a comparison with a normal chat request, a decision guide for choosing retain/replace/delete, common mistakes, a safety checklist before approval, unsuitable scenarios, and a short roadmap for future versions.
+
 The public Skill, example, and video kit must pass a private-name and live-looking-secret scan before GitHub publication.
+
+After the real GitHub remote is explicitly approved and published, replace repository URL placeholders in the video description, pinned comment, installation commands, and final call to action with the confirmed public URL. Do not guess the user's account, organization, repository name, or visibility.
 
 ## Private Acceptance Scope
 
@@ -103,6 +126,8 @@ After implementation, rerun the audit against the unchanged Starter. The recomme
 - replace user-facing brand, repository, social, SEO, email, documentation, and package residue with the confirmed neutral profile;
 - retain local demo media while renaming source-branded asset paths and updating references;
 - preserve tests, replacing only source-specific fixture values where necessary.
+
+The private effect report must list the real target's findings by P0, P1, P2, and P3 with paths, categories, decisions, and before/after counts. The public case study and video may use category names, aggregate counts, safe filenames, and product-function descriptions, but must omit purchased source excerpts, asset contents, private paths, secrets, and live-looking identifiers.
 
 The Starter is modified only after the user approves the exact current preview diff and token. After apply, run `pnpm lint`, `pnpm test`, `pnpm build`, and the residue verifier. Unexpected P3 residue returns to a new preview cycle.
 
