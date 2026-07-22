@@ -116,6 +116,20 @@ The public Skill, example, and video kit must pass a private-name and live-looki
 
 After the real GitHub remote is explicitly approved and published, replace repository URL placeholders in the video description, pinned comment, installation commands, and final call to action with the confirmed public URL. Do not guess the user's account, organization, repository name, or visibility.
 
+### Screenshot capture and script embedding
+
+Capture visual evidence as each milestone becomes available so the creator does not need to recreate the Skill run or re-record missing screens later.
+
+- Store private full-detail evidence under the external run directory in `screenshots/private/`; never commit it.
+- Store public, sanitized 16:9 PNG images under `docs/assets/video/` and commit only images rendered from sanitized text or synthetic fixtures.
+- Maintain `docs/video-shot-list.zh-CN.md` with screenshot ID, milestone, source artifact, privacy class, on-screen focus, matching narration, and final filename.
+- Embed every public screenshot directly at the relevant position in `docs/video-kit.zh-CN.md`, followed by explicit editing directions such as display duration, crop/focus area, and the sentence spoken over it.
+- Capture at minimum: initial audit summary, P0–P3 explanation, safety regression test, exact-preview summary, approval gate, post-cleanup validation, before/after comparison, remaining protected findings, restore artifacts, and the published GitHub repository page.
+- Do not publicly screenshot raw purchased code, private absolute paths, source assets, secrets, live-looking product identifiers, approval tokens, or unredacted diffs. Render a sanitized explanatory card or synthetic equivalent instead.
+- Record the safe text source used to render each public PNG so a later wording correction does not require repeating the private Starter run.
+
+The video kit is not complete while a referenced screenshot is missing, uses a temporary filename, lacks its matching narration, or has not passed the public privacy scan and visual inspection.
+
 ## Private Acceptance Scope
 
 After implementation, rerun the audit against the unchanged Starter. The recommended preview will:
