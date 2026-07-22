@@ -10,8 +10,8 @@
 
 ## Global Constraints
 
-- The current Sistine Starter is a private acceptance target, never a public fixture.
-- Do not hard-code `Sistine`, its paths, or Next.js assumptions into generic detection rules.
+- The current private Starter is an acceptance target, never a public fixture.
+- Do not hard-code its source identity, private paths, or Next.js assumptions into generic detection rules.
 - Keep the installable Skill folder free of README, CHANGELOG, public tests, and design-process documentation.
 - Use only the Python standard library in runtime scripts.
 - Make no content change to the real target workspace before the current preview hash and diff receive explicit user approval.
@@ -282,7 +282,7 @@ git commit -m "test: add de-starter baselines and fixtures"
 - [ ] **Step 1: Run the official initializer**
 
 ```bash
-python3 /Users/alisa/.codex/skills/.system/skill-creator/scripts/init_skill.py \
+python3 "$CODEX_HOME/skills/.system/skill-creator/scripts/init_skill.py" \
   de-starter \
   --path skills \
   --resources scripts,references \
@@ -2269,7 +2269,7 @@ Each reference stays under 150 lines and does not repeat the full workflow.
 - [ ] **Step 4: Validate structure and word count**
 
 ```bash
-python3 /Users/alisa/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/de-starter
+python3 "$CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py" skills/de-starter
 wc -w skills/de-starter/SKILL.md
 rg -n 'README|CHANGELOG|tests/' skills/de-starter || true
 ```
@@ -2307,7 +2307,7 @@ Expected: record observed variance; do not infer compliance from a single sample
 Use five fresh contexts with:
 
 ```text
-Use $de-starter at /Users/alisa/Documents/de-starter/skills/de-starter to handle this repository:
+Use $de-starter at $REPO_ROOT/skills/de-starter to handle this repository:
 <exact speed-over-safety prompt>
 ```
 
@@ -2328,7 +2328,7 @@ If an Agent invents a brand, edits before approval, hides the diff, or treats a 
 - [ ] **Step 5: Validate and commit evaluation evidence**
 
 ```bash
-python3 /Users/alisa/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/de-starter
+python3 "$CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py" skills/de-starter
 python3 -m unittest discover -s tests -v
 git add skills/de-starter tests/skill
 git commit -m "test: forward-test de-starter workflow"
@@ -2478,14 +2478,15 @@ jobs:
 
 - [ ] **Step 4: Generate a sanitized example from the fixture**
 
-Run `discover` and `audit` against `tests/fixtures/nextjs-starter`, then copy only the Markdown report to `examples/sanitized-report.md`. Confirm it contains `Northstar` synthetic values and no `/Users/` path.
+Run `discover` and `audit` against `tests/fixtures/nextjs-starter`, then copy only the Markdown report to `examples/sanitized-report.md`. Confirm it contains `Northstar` synthetic values and no local absolute home path.
 
 - [ ] **Step 5: Verify public hygiene and commit**
 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q skills/de-starter/scripts
-rg -n -i 'sistine|idea-to-business|applysistine|prod_[A-Za-z0-9]+' . \
+: "${PRIVATE_SOURCE_PATTERN:?Set PRIVATE_SOURCE_PATTERN to the private source-identity regex}"
+rg -n -i "${PRIVATE_SOURCE_PATTERN}|prod_[A-Za-z0-9]+" . \
   --glob '!docs/superpowers/specs/**' \
   --glob '!docs/superpowers/plans/**'
 git diff --check
@@ -2497,11 +2498,11 @@ Expected: no private Starter names or live-looking payment IDs outside private d
 
 ---
 
-### Task 13: Run the Private Sistine Acceptance Dry-Run
+### Task 13: Run the Private Acceptance Dry-Run
 
 **Files:**
-- Read only: `/Users/alisa/Documents/starter`
-- Create outside project: `${TMPDIR}/de-starter-sistine.*/`
+- Read only: `$TARGET_PROJECT`
+- Create outside project: `$PRIVATE_RUN_ROOT.*`
 - Do not create or modify files inside the Starter during this task.
 
 **Interfaces:**
@@ -2511,20 +2512,23 @@ Expected: no private Starter names or live-looking payment IDs outside private d
 - [ ] **Step 1: Create an external run directory and discover**
 
 ```bash
-RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/de-starter-sistine.XXXXXX")"
-python3 /Users/alisa/Documents/de-starter/skills/de-starter/scripts/destarter.py \
+: "${REPO_ROOT:?Set REPO_ROOT to the de-starter repository root}"
+: "${TARGET_PROJECT:?Set TARGET_PROJECT to the private target project}"
+: "${PRIVATE_RUN_ROOT:?Set PRIVATE_RUN_ROOT to a disjoint external directory prefix}"
+RUN_DIR="$(mktemp -d "${PRIVATE_RUN_ROOT%/}.XXXXXX")"
+python3 "$REPO_ROOT/skills/de-starter/scripts/destarter.py" \
   discover \
-  --project /Users/alisa/Documents/starter \
+  --project "$TARGET_PROJECT" \
   --run-dir "$RUN_DIR"
 ```
 
-Expected: only `"$RUN_DIR/discovery.json"` is written; `/Users/alisa/Documents/starter` remains unchanged.
+Expected: only `"$RUN_DIR/discovery.json"` is written; `$TARGET_PROJECT` remains unchanged.
 
 - [ ] **Step 2: Present and confirm source identities**
 
 Show detected candidates with evidence. Select unambiguous Starter identities using the approved risk rules; ask the user only when ownership is genuinely ambiguous. Do not treat dependency names or payment vendors as Starter identities.
 
-Expected likely candidates from the preliminary read-only inspection include Sistine identity variants, original repository ownership, and original promotional domains; the discovery output is authoritative.
+Expected likely candidates from the preliminary read-only inspection include private source-identity variants, original repository ownership, and original promotional domains; the discovery output is authoritative.
 
 - [ ] **Step 3: Collect the actual target brand mode**
 
@@ -2548,9 +2552,9 @@ Choose P2 categories using product utility: preserve working product capabilitie
 Write only user-approved P2/P3 actions to `"$RUN_DIR/decisions.json"`. Keep P0 and P1 actions set to `keep`. Run:
 
 ```bash
-python3 /Users/alisa/Documents/de-starter/skills/de-starter/scripts/destarter.py \
+python3 "$REPO_ROOT/skills/de-starter/scripts/destarter.py" \
   preview \
-  --project /Users/alisa/Documents/starter \
+  --project "$TARGET_PROJECT" \
   --run-dir "$RUN_DIR" \
   --decisions "$RUN_DIR/decisions.json"
 ```
@@ -2566,7 +2570,7 @@ Do not proceed to Task 14 without an explicit approval message for the current p
 ### Task 14: Apply the Approved Starter Cleanup and Refine the Skill
 
 **Files:**
-- Modify only user-approved files under `/Users/alisa/Documents/starter`.
+- Modify only user-approved files under `$TARGET_PROJECT`.
 - Modify Skill/tests only when the real run reveals a reproducible generic gap.
 - Create: `examples/sanitized-real-run-summary.md` only from non-proprietary aggregate facts.
 
@@ -2577,9 +2581,9 @@ Do not proceed to Task 14 without an explicit approval message for the current p
 - [ ] **Step 1: Apply only the approved token**
 
 ```bash
-python3 /Users/alisa/Documents/de-starter/skills/de-starter/scripts/destarter.py \
+python3 "$REPO_ROOT/skills/de-starter/scripts/destarter.py" \
   apply \
-  --project /Users/alisa/Documents/starter \
+  --project "$TARGET_PROJECT" \
   --run-dir "$RUN_DIR" \
   --approval-token "$APPROVED_TOKEN"
 ```
@@ -2594,14 +2598,14 @@ pnpm test
 pnpm build
 ```
 
-Run from `/Users/alisa/Documents/starter`. Expected: all commands exit 0, apart from already documented dynamic-route warnings that do not fail the build.
+Run from `$TARGET_PROJECT`. Expected: all commands exit 0, apart from already documented dynamic-route warnings that do not fail the build.
 
 - [ ] **Step 3: Run the second residue scan**
 
 ```bash
-python3 /Users/alisa/Documents/de-starter/skills/de-starter/scripts/destarter.py \
+python3 "$REPO_ROOT/skills/de-starter/scripts/destarter.py" \
   verify \
-  --project /Users/alisa/Documents/starter \
+  --project "$TARGET_PROJECT" \
   --run-dir "$RUN_DIR" \
   --source-config "$RUN_DIR/source.json"
 ```
@@ -2621,7 +2625,7 @@ Verify manually from the diff and tests:
 
 - [ ] **Step 5: Generalize only reproducible gaps**
 
-For any generic miss, first add a failing synthetic test, then make the minimal scanner or Skill change, rerun all tests, and rerun the affected private audit step. Do not add a rule containing `Sistine` or a private path.
+For any generic miss, first add a failing synthetic test, then make the minimal scanner or Skill change, rerun all tests, and rerun the affected private audit step. Do not add a rule containing a private source identity or path.
 
 - [ ] **Step 6: Commit repository changes separately**
 
@@ -2632,7 +2636,7 @@ git add skills tests examples
 git commit -m "fix: incorporate real-world de-starter findings"
 ```
 
-For `/Users/alisa/Documents/starter`, create a Git repository or commit only if the user explicitly requests it; the source directory currently has no `.git`.
+For `$TARGET_PROJECT`, create a Git repository or commit only if the user explicitly requests it; do not assume the target contains `.git`.
 
 ---
 
@@ -2651,7 +2655,7 @@ For `/Users/alisa/Documents/starter`, create a Git repository or commit only if 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q skills/de-starter/scripts
-python3 /Users/alisa/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/de-starter
+python3 "$CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py" skills/de-starter
 python3 skills/de-starter/scripts/destarter.py --help
 git diff --check
 git status --short
@@ -2663,7 +2667,8 @@ Expected: tests and validation pass; the worktree is clean.
 
 ```bash
 find skills/de-starter -maxdepth 3 -type f | sort
-rg -n -i 'sistine|idea-to-business|applysistine|live-secret|prod_[A-Za-z0-9]+' \
+: "${PRIVATE_SOURCE_PATTERN:?Set PRIVATE_SOURCE_PATTERN to the private source-identity regex}"
+rg -n -i "${PRIVATE_SOURCE_PATTERN}|live-secret|prod_[A-Za-z0-9]+" \
   skills tests examples README.md CHANGELOG.md
 ```
 

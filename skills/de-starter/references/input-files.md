@@ -12,7 +12,7 @@ Its complete schema is exactly `{"source_terms":[...]}`. `source_terms` is a non
 
 ## `decisions.json`
 
-Only these top-level keys are allowed: `brand_mode`, `brand_profile`, `actions`, `delete_paths`, `rename_paths`, `text_edits`. `brand_mode` is `real` or `placeholder`; `brand_profile` follows [Brand Profile](brand-profile.md). `actions` is an array of unique finding decisions:
+Only these top-level keys are allowed: `brand_mode`, `brand_profile`, `actions`, `delete_paths`, `rename_paths`, `text_edits`, `cleanup_empty_dirs`. `brand_mode` is `real` or `placeholder`; `brand_profile` follows [Brand Profile](brand-profile.md). `actions` is an array of unique finding decisions:
 
 ```json
 {
@@ -24,6 +24,7 @@ Only these top-level keys are allowed: `brand_mode`, `brand_profile`, `actions`,
   ],
   "delete_paths": ["demo"],
   "rename_paths": {"public/starter-logo.svg":"public/product-logo.svg"},
+  "cleanup_empty_dirs": ["public/starter"],
   "text_edits": [
     {
       "path":"app/page.tsx",
@@ -38,5 +39,7 @@ Only these top-level keys are allowed: `brand_mode`, `brand_profile`, `actions`,
 ```
 
 An action is `keep` or `replace`; `replace` needs `replacement`. P1 replacements also need nonempty `migration_plan` and `rollback_plan`. Under this Skill, omit P0 findings from `actions` entirely: the runtime accepts `keep`, but the product contract deliberately keeps P0 out of actions. `delete_paths` removes only an audited P2 scope after explicit confirmation. `rename_paths` maps audited P2 or path-finding source paths to distinct, project-relative destinations; an audited directory root is eligible only when the root itself is in that scope and every audited descendant is authorized. Renames cannot overlap deletes or other rename paths.
+
+`cleanup_empty_dirs` is an optional array of unique, non-overlapping project-relative directory paths and defaults to `[]`. Each path needs its own exact audited `directory-name` finding and explicit user approval; it is independent from `delete_paths` and cannot be inferred from an approved child operation. The directory must already be empty or become empty only because every remaining child is owned by an approved descendant delete/rename whose destination is outside the cleanup root. Cleanup paths cannot be the project root, ignored/secret/legal paths, symlinks, ordinary unnamed empty directories, delete/rename sources, or overlap rename destinations. Adding or changing one requires a new preview and approval token.
 
 `text_edits` is an array of scoped semantic edits. Each edit requires `path`, `expected_sha256`, `start_line`, `end_line`, `replacement`, and `reason`; it may also contain `migration_plan` and `rollback_plan`. `path` must name an audited UTF-8 text file inside the project; `expected_sha256` must equal its audited lowercase SHA-256 and current file hash; `start_line` and `end_line` are inclusive positive line numbers; `replacement` is a string; and `reason` states the approved purpose. Ranges cannot overlap P0 lines, separately actioned findings, or other semantic ranges. A range that overlaps any P1 line is accepted only when both plan fields contain the real, explicitly approved migration and rollback steps; boilerplate such as “required for P1” is not an approval. Record the named path, purpose, and any P1 plans at gate one. The preview writes safe `semantic-edits.json` metadata with a `p1_migration_protected` flag, but never the replacement or plan text.

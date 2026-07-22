@@ -12,7 +12,7 @@ from destarter_lib.adapters import detect_project
 from destarter_lib.apply import ApplyError, apply_preview
 from destarter_lib.candidates import discover_candidates
 from destarter_lib.decisions import DecisionError, load_decisions
-from destarter_lib.files import iter_project_files, safe_write_text
+from destarter_lib.files import iter_project_directories, iter_project_files, safe_write_text
 from destarter_lib.models import (
     AuditResult,
     DirectoryRecord,
@@ -226,16 +226,26 @@ def main(argv: Sequence[str] = ()) -> int:
     args = build_parser().parse_args(list(argv) or None)
     root, run = _validate_locations(args.project, args.run_dir)
     if args.command == "discover":
-        _write(run / "discovery.json", {"project": asdict(detect_project(root)), "candidates": [asdict(item) for item in discover_candidates(root)], "files": [asdict(item) for item in iter_project_files(root)]})
+        _write(run / "discovery.json", {
+            "project": asdict(detect_project(root)),
+            "candidates": [asdict(item) for item in discover_candidates(root)],
+            "files": [asdict(item) for item in iter_project_files(root)],
+            "directories": [asdict(item) for item in iter_project_directories(root)],
+        })
         print(run / "discovery.json")
     elif args.command in {"audit", "verify"}:
         audit = scan_project(root, _source_terms(args.source_config))
         target = run if args.command == "audit" else run / "verification"
         write_audit_reports(audit, target)
         if args.command == "verify":
-            print("remaining findings: {}".format(len(audit.findings)))
+            print("remaining file findings: {}".format(len(audit.findings)))
+            print("remaining directory findings: {}".format(
+                len(audit.directory_findings)
+            ))
         print(target / "audit.md")
-        if args.command == "verify" and audit.findings:
+        if args.command == "verify" and (
+            audit.findings or audit.directory_findings
+        ):
             return 3
     elif args.command == "preview":
         audit = _load_audit(run / "audit.json")

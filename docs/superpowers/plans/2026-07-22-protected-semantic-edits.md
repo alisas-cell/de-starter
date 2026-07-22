@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Never modify `/Users/alisa/Documents/starter` before approval of the exact current preview diff and token.
+- Never modify `$TARGET_PROJECT` before approval of the exact current preview diff and token.
 - Never commit private Starter names, paths, source excerpts, assets, secrets, live-looking IDs, or approval tokens.
 - P0 is immutable. P1 still needs a finding replacement with explicit migration and rollback plans.
 - Semantic edits are UTF-8, one-based inclusive line ranges; no insert-only mode, binary editing, or fuzzy patching in v0.1.
@@ -240,7 +240,7 @@ Document the exact schema. Require named semantic path/purpose at gate one and `
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_cli_e2e -v
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q skills/de-starter/scripts
-python3 /Users/alisa/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/de-starter
+python3 "$CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py" skills/de-starter
 python3 skills/de-starter/scripts/destarter.py --help
 git diff --check
 git add skills/de-starter README.md tests/test_cli_e2e.py
@@ -252,8 +252,8 @@ git commit -m "docs: add protected semantic edit workflow"
 ### Task 4: Re-Audit the Private Starter and Capture Gate-One Evidence
 
 **Files:**
-- Read only: `/Users/alisa/Documents/starter`
-- Update outside project: `/Users/alisa/Documents/de-starter-sistine.MRtoO4/`
+- Read only: `$TARGET_PROJECT`
+- Update outside project: `$PRIVATE_RUN_ROOT/`
 - Create: `docs/video-shot-list.zh-CN.md`
 - Create: `docs/assets/video/sources/01-audit-overview.html`
 - Create: `docs/assets/video/01-audit-overview.png`
@@ -324,7 +324,7 @@ Save the private full preview screenshot outside Git. Render public 1600×900 tw
 ### Task 6: Apply, Validate, Verify, and Produce the Effect Audit
 
 **Files:**
-- Modify only approved paths: `/Users/alisa/Documents/starter`
+- Modify only approved paths: `$TARGET_PROJECT`
 - Create outside project: `$RUN/effect-audit-private.md`, backups, restore files, private screenshots
 - Create: `examples/sanitized-real-run-summary.md`
 - Create: `docs/assets/video/sources/03-before-after.html`
@@ -421,7 +421,7 @@ git commit -m "docs: add beginner de-starter video kit"
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q skills/de-starter/scripts
-python3 /Users/alisa/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/de-starter
+python3 "$CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py" skills/de-starter
 python3 skills/de-starter/scripts/destarter.py --help
 git diff --check
 git status --short

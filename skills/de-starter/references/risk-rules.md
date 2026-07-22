@@ -15,4 +15,6 @@ P0 never enters actions, P0 lines cannot enter semantic edits, and any path cont
 
 Present P2 choices by category, including demo routes, sample content, testimonials, test data, and assets. Make a sensible P2 recommendation when the user delegates a choice, but require explicit confirmation before deletion. Record every selected category action in the decisions file.
 
+Directory residue is a separate dimension, not a P2 delete shortcut or a file finding. Report only exact source-named directory findings. An exact path may enter `cleanup_empty_dirs` after explicit approval when it is already empty or the approved preview proves it becomes empty solely through owned descendant deletes/renames. Never infer parent cleanup, remove ordinary empty directories, run global cleanup, or substitute `rmdir`/recursive shell deletion. A changed directory needs a new preview/token; apply must retain external transactional backup and rollback/restore evidence.
+
 Treat generated files as derived: change their source and run the repository generator. P3 changes remain proposals until the user approves the exact current preview.

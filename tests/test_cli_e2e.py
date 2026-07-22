@@ -69,6 +69,200 @@ class CliEndToEndTests(unittest.TestCase):
             self.assertTrue((run / "verification" / "audit.json").is_file())
             self.assertIn("remaining", verified.stdout.lower())
 
+    def test_empty_directory_lifecycle_is_strict_token_bound_and_separately_verified(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "project"
+            cleanup = root / "public" / "starter"
+            cleanup.mkdir(parents=True)
+            (root / "keep.txt").write_text(
+                "starter word intentionally retained\n", encoding="utf-8",
+            )
+            run = base / "run"
+            source = self.write_json(base / "source.json", {"source_terms": ["starter"]})
+
+            discovered = self.run_cli(
+                "discover", "--project", str(root), "--run-dir", str(run),
+            )
+            self.assertEqual(discovered.returncode, 0, discovered.stderr)
+            discovery = json.loads((run / "discovery.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(discovery), {"project", "candidates", "files", "directories"},
+            )
+            discovered_cleanup = next(
+                item for item in discovery["directories"]
+                if item["relpath"] == "public/starter"
+            )
+            self.assertEqual(
+                set(discovered_cleanup),
+                {"relpath", "mode", "state_sha256", "is_empty"},
+            )
+            self.assertTrue(discovered_cleanup["is_empty"])
+
+            audited = self.run_cli(
+                "audit", "--project", str(root), "--run-dir", str(run),
+                "--source-config", str(source),
+            )
+            self.assertEqual(audited.returncode, 0, audited.stderr)
+            audit = json.loads((run / "audit.json").read_text(encoding="utf-8"))
+            file_finding_count = len(audit["findings"])
+            self.assertGreater(file_finding_count, 0)
+            self.assertEqual(len(audit["directory_findings"]), 1)
+            self.assertEqual(audit["directory_findings"][0]["relpath"], "public/starter")
+
+            decisions = self.write_json(base / "decisions.json", {
+                "brand_mode": "placeholder",
+                "brand_profile": {},
+                "actions": [],
+                "cleanup_empty_dirs": ["public/starter"],
+            })
+            preview = self.run_cli(
+                "preview", "--project", str(root), "--run-dir", str(run),
+                "--decisions", str(decisions),
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            token = preview.stdout.strip().splitlines()[-1]
+            self.assertFalse((run / "preview" / "public" / "starter").exists())
+            self.assertTrue(cleanup.is_dir())
+
+            rejected = self.run_cli(
+                "apply", "--project", str(root), "--run-dir", str(run),
+                "--approval-token", "wrong-token",
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertTrue(cleanup.is_dir())
+            self.assertFalse((run / "backup").exists())
+
+            applied = self.run_cli(
+                "apply", "--project", str(root), "--run-dir", str(run),
+                "--approval-token", token,
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertFalse(cleanup.exists())
+            self.assertTrue((root / "public").is_dir())
+            self.assertEqual(
+                (root / "keep.txt").read_text(encoding="utf-8"),
+                "starter word intentionally retained\n",
+            )
+            apply_result = json.loads((run / "apply-result.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(apply_result), {
+                "run_id", "changed_paths", "deleted_paths", "renamed_paths",
+                "backup_root", "restore_manifest", "cleaned_empty_dirs",
+            })
+            self.assertEqual(apply_result["cleaned_empty_dirs"], ["public/starter"])
+            self.assertEqual(apply_result["changed_paths"], [])
+            self.assertEqual(apply_result["deleted_paths"], [])
+            self.assertEqual(apply_result["renamed_paths"], {})
+
+            verified = self.run_cli(
+                "verify", "--project", str(root), "--run-dir", str(run),
+                "--source-config", str(source),
+            )
+            self.assertEqual(verified.returncode, 3, verified.stderr)
+            self.assertIn(
+                "remaining file findings: {}".format(file_finding_count),
+                verified.stdout.lower(),
+            )
+            self.assertIn("remaining directory findings: 0", verified.stdout.lower())
+            verification = json.loads(
+                (run / "verification" / "audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(verification["findings"]), file_finding_count)
+            self.assertEqual(len(verification["directory_findings"]), 0)
+
+    def test_preview_strictly_rejects_invalid_directory_audit_schema(self) -> None:
+        mutations = {
+            "missing directories": lambda audit: audit.pop("directories"),
+            "unknown directory field": lambda audit: audit["directories"][0].update({"extra": 1}),
+            "missing directory field": lambda audit: audit["directories"][0].pop("is_empty"),
+            "duplicate directory path": lambda audit: audit["directories"].append(dict(audit["directories"][0])),
+            "invalid directory mode bool": lambda audit: audit["directories"][0].update({"mode": True}),
+            "invalid directory mode range": lambda audit: audit["directories"][0].update({"mode": 0o10000}),
+            "invalid directory hash": lambda audit: audit["directories"][0].update({"state_sha256": "ABC"}),
+            "invalid directory empty bool": lambda audit: audit["directories"][0].update({"is_empty": 1}),
+            "duplicate directory finding id": lambda audit: audit["directory_findings"].append(dict(audit["directory_findings"][0])),
+            "directory finding without record": lambda audit: audit["directories"].clear(),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                root = base / "project"
+                (root / "public" / "starter").mkdir(parents=True)
+                run = base / "run"
+                source = self.write_json(base / "source.json", {"source_terms": ["starter"]})
+                audited = self.run_cli(
+                    "audit", "--project", str(root), "--run-dir", str(run),
+                    "--source-config", str(source),
+                )
+                self.assertEqual(audited.returncode, 0, audited.stderr)
+                audit = json.loads((run / "audit.json").read_text(encoding="utf-8"))
+                mutate(audit)
+                (run / "audit.json").write_text(json.dumps(audit), encoding="utf-8")
+                decisions = self.write_json(base / "decisions.json", {
+                    "brand_mode": "placeholder", "brand_profile": {},
+                    "actions": [], "cleanup_empty_dirs": ["public/starter"],
+                })
+
+                result = self.run_cli(
+                    "preview", "--project", str(root), "--run-dir", str(run),
+                    "--decisions", str(decisions),
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid audit", result.stderr.lower())
+                self.assertNotIn("traceback", result.stderr.lower())
+                self.assertTrue((root / "public" / "starter").is_dir())
+                self.assertFalse((run / "preview").exists())
+
+    def test_preview_rejects_stale_or_tampered_directory_state_before_writes(self) -> None:
+        for label, mutate_project, mutate_audit in (
+            (
+                "stale child insertion",
+                lambda root: (root / "public" / "starter" / "foreign.txt").write_text(
+                    "foreign\n", encoding="utf-8",
+                ),
+                lambda audit: None,
+            ),
+            (
+                "tampered directory state",
+                lambda root: None,
+                lambda audit: audit["directories"][-1].update({"state_sha256": "0" * 64}),
+            ),
+        ):
+            with self.subTest(label=label), TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                root = base / "project"
+                (root / "public" / "starter").mkdir(parents=True)
+                run = base / "run"
+                source = self.write_json(base / "source.json", {"source_terms": ["starter"]})
+                audited = self.run_cli(
+                    "audit", "--project", str(root), "--run-dir", str(run),
+                    "--source-config", str(source),
+                )
+                self.assertEqual(audited.returncode, 0, audited.stderr)
+                audit = json.loads((run / "audit.json").read_text(encoding="utf-8"))
+                mutate_project(root)
+                mutate_audit(audit)
+                (run / "audit.json").write_text(json.dumps(audit), encoding="utf-8")
+                decisions = self.write_json(base / "decisions.json", {
+                    "brand_mode": "placeholder", "brand_profile": {},
+                    "actions": [], "cleanup_empty_dirs": ["public/starter"],
+                })
+
+                result = self.run_cli(
+                    "preview", "--project", str(root), "--run-dir", str(run),
+                    "--decisions", str(decisions),
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(
+                    "audit does not match current scan" in result.stderr.lower()
+                    or "invalid audit directory finding" in result.stderr.lower(),
+                    result.stderr,
+                )
+                self.assertTrue((root / "public" / "starter").is_dir())
+                self.assertFalse((run / "preview").exists())
+
     def test_preview_reloads_a_directory_with_special_permission_bits(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
