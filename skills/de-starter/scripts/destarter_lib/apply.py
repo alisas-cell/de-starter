@@ -76,7 +76,24 @@ class Output:
     preview_name: str
     expected: ObjectState
     initially_absent: bool
+    anchor_relpath: str
+    missing_parents: Tuple["ParentStep", ...] = ()
     created: Optional[ObjectState] = None
+
+
+@dataclass(frozen=True)
+class ParentStep:
+    relpath: str
+    name: str
+    mode: int
+
+
+@dataclass(frozen=True)
+class CreatedParent:
+    relpath: str
+    parent_fd: int
+    name: str
+    identity: Identity
 
 
 @dataclass
@@ -103,6 +120,7 @@ class Transaction:
     originals: List[Original]
     outputs: List[Output]
     ambient: Dict[str, Identity]
+    created_parents: List[CreatedParent] = field(default_factory=list)
     fds: List[int] = field(default_factory=list)
     artifacts: List[Artifact] = field(default_factory=list)
     backup_exists: bool = True
@@ -479,6 +497,72 @@ def _open_parent(root_fd: int, relpath: str) -> Tuple[int, str]:
         raise
 
 
+def _plan_output_parent(
+    root_fd: int,
+    preview_fd: int,
+    relpath: str,
+) -> Tuple[int, str, Tuple[ParentStep, ...], int, str]:
+    """Pin the deepest existing parent and describe approved missing dirs."""
+    parts = _safe_relpath(relpath).parts
+    root_parent = os.dup(root_fd)
+    preview_parent = os.dup(preview_fd)
+    root_missing = False
+    existing_parts: List[str] = []
+    missing: List[ParentStep] = []
+    try:
+        prefix: List[str] = []
+        for part in parts[:-1]:
+            prefix.append(part)
+            preview_next = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=preview_parent,
+            )
+            os.close(preview_parent)
+            preview_parent = preview_next
+            if root_missing:
+                missing.append(ParentStep(
+                    "/".join(prefix),
+                    part,
+                    stat.S_IMODE(os.fstat(preview_parent).st_mode),
+                ))
+                continue
+            try:
+                root_next = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=root_parent,
+                )
+            except FileNotFoundError:
+                root_missing = True
+                missing.append(ParentStep(
+                    "/".join(prefix),
+                    part,
+                    stat.S_IMODE(os.fstat(preview_parent).st_mode),
+                ))
+            except OSError as error:
+                _fail(
+                    "output parent is not a real directory: {}: {}".format(
+                        "/".join(prefix), error
+                    )
+                )
+            else:
+                os.close(root_parent)
+                root_parent = root_next
+                existing_parts.append(part)
+        return (
+            root_parent,
+            "/".join(existing_parts) or ".",
+            tuple(missing),
+            preview_parent,
+            parts[-1],
+        )
+    except Exception:
+        os.close(root_parent)
+        os.close(preview_parent)
+        raise
+
+
 def _identity_from_stat(info: os.stat_result) -> Identity:
     return info.st_dev, info.st_ino
 
@@ -826,24 +910,28 @@ def _prepare_transaction(
         outputs = []
         rename_destinations = set(manifest.renamed_paths.values())
         for relpath, initially_absent in _output_paths(manifest):
-            parent_fd, name = _open_parent(root_fd, relpath)
+            (
+                parent_fd,
+                anchor_relpath,
+                missing_parents,
+                preview_parent_fd,
+                name,
+            ) = _plan_output_parent(root_fd, preview_fd, relpath)
             fds.append(parent_fd)
+            fds.append(preview_parent_fd)
             if os.fstat(parent_fd).st_dev != os.fstat(original_fd).st_dev:
                 _fail(
                     "output parent is not on the external backup "
                     "filesystem: {}".format(relpath)
                 )
             if initially_absent:
-                if not _absent(parent_fd, name):
+                if not missing_parents and not _absent(parent_fd, name):
                     _fail(
                         "rename destination already exists: {}".format(relpath)
                     )
             elif _absent(parent_fd, name):
                 _fail("standalone source is missing: {}".format(relpath))
-            preview_parent_fd, preview_name = _open_parent(
-                preview_fd, relpath
-            )
-            fds.append(preview_parent_fd)
+            preview_name = name
             expected = _state_at(preview_parent_fd, preview_name)
             outputs.append(
                 Output(
@@ -854,6 +942,8 @@ def _prepare_transaction(
                     preview_name,
                     expected,
                     relpath in rename_destinations,
+                    anchor_relpath,
+                    missing_parents,
                 )
             )
 
@@ -863,7 +953,7 @@ def _prepare_transaction(
             for item in originals
         )
         ambient_paths.extend(
-            root / _safe_relpath(item.relpath).parent
+            root / _safe_relpath(item.anchor_relpath)
             for item in outputs
         )
         transaction = Transaction(
@@ -883,6 +973,7 @@ def _prepare_transaction(
             originals,
             outputs,
             _capture_ambient(ambient_paths),
+            [],
             fds,
         )
         _verify_pinned_approval(transaction)
@@ -891,7 +982,7 @@ def _prepare_transaction(
         temporary = Transaction(
             root, run, preview, manifest, raw, root_fd, run_fd,
             preview_fd, backup_fd, original_fd,
-            backup_identity, original_identity, owner_state, [], [], {}, fds,
+            backup_identity, original_identity, owner_state, [], [], {}, [], fds,
         )
         _cleanup_empty_backup(temporary)
         temporary.close()
@@ -915,7 +1006,11 @@ def _verify_pinned_approval(transaction: Transaction) -> None:
     }
     for output in transaction.outputs:
         if output.initially_absent:
-            if not _absent(output.parent_fd, output.name):
+            boundary = (
+                output.missing_parents[0].name
+                if output.missing_parents else output.name
+            )
+            if not _absent(output.parent_fd, boundary):
                 _fail(
                     "rename destination appeared after preflight: "
                     "{}".format(output.relpath)
@@ -947,6 +1042,63 @@ def _verify_pinned_approval(transaction: Transaction) -> None:
             _fail(
                 "preview artifact changed after approval token creation: "
                 "{}".format(name)
+            )
+
+
+def _create_output_parents(transaction: Transaction) -> None:
+    """Create only token-approved missing parents through pinned descriptors."""
+    created = {
+        item.relpath: item for item in transaction.created_parents
+    }
+    for output in transaction.outputs:
+        current = output.parent_fd
+        for step in output.missing_parents:
+            owned = created.get(step.relpath)
+            if owned is not None:
+                child = os.open(
+                    step.name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=current,
+                )
+                if _identity_from_stat(os.fstat(child)) != owned.identity:
+                    os.close(child)
+                    _fail(
+                        "created output parent changed: {}".format(
+                            step.relpath
+                        )
+                    )
+                transaction.fds.append(child)
+                current = child
+                continue
+            if not _absent(current, step.name):
+                _fail(
+                    "output parent appeared during transaction: {}".format(
+                        step.relpath
+                    )
+                )
+            owner_parent = os.dup(current)
+            transaction.fds.append(owner_parent)
+            child, identity = _mkdir_exclusive(
+                current, step.name, step.mode
+            )
+            transaction.fds.append(child)
+            parent = CreatedParent(
+                step.relpath,
+                owner_parent,
+                step.name,
+                identity,
+            )
+            transaction.created_parents.append(parent)
+            created[step.relpath] = parent
+            current = child
+        output.parent_fd = current
+
+
+def _verify_created_parents(transaction: Transaction) -> None:
+    for parent in transaction.created_parents:
+        if _identity_at(parent.parent_fd, parent.name) != parent.identity:
+            _fail(
+                "created output parent changed: {}".format(parent.relpath)
             )
 
 
@@ -1093,6 +1245,8 @@ def _verify_backups(transaction: Transaction) -> None:
 def _fd_transaction(transaction: Transaction) -> None:
     """Final entry: recheck, move originals externally, then create exclusively."""
     _verify_pinned_approval(transaction)
+    _create_output_parents(transaction)
+    _verify_created_parents(transaction)
     _move_originals(transaction)
     _verify_backups(transaction)
     _create_outputs(transaction)
@@ -1100,6 +1254,7 @@ def _fd_transaction(transaction: Transaction) -> None:
 
 def _verify_success(transaction: Transaction) -> None:
     _verify_ambient(transaction)
+    _verify_created_parents(transaction)
     _verify_backups(transaction)
     for original in transaction.originals:
         if not _absent(original.parent_fd, original.name):
@@ -1406,6 +1561,49 @@ def _restore_original_no_replace(
     return "original {} has unsupported backup type".format(original.relpath)
 
 
+def _remove_created_parents(transaction: Transaction) -> List[str]:
+    errors: List[str] = []
+    for parent in reversed(transaction.created_parents):
+        try:
+            if _absent(parent.parent_fd, parent.name):
+                errors.append(
+                    "created parent {} disappeared before rollback".format(
+                        parent.relpath
+                    )
+                )
+                continue
+            if _identity_at(parent.parent_fd, parent.name) != parent.identity:
+                errors.append(
+                    "created parent {} was raced or replaced; preserved".format(
+                        parent.relpath
+                    )
+                )
+                continue
+            child = os.open(
+                parent.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent.parent_fd,
+            )
+            try:
+                if os.listdir(child):
+                    errors.append(
+                        "created parent {} is not empty; preserved".format(
+                            parent.relpath
+                        )
+                    )
+                    continue
+            finally:
+                os.close(child)
+            os.rmdir(parent.name, dir_fd=parent.parent_fd)
+        except Exception as error:
+            errors.append(
+                "created parent {} cleanup failed: {}".format(
+                    parent.relpath, error
+                )
+            )
+    return errors
+
+
 def _rollback(transaction: Transaction) -> List[str]:
     """Restore only identities and complete states owned by this transaction."""
     errors: List[str] = []
@@ -1459,6 +1657,7 @@ def _rollback(transaction: Transaction) -> List[str]:
         )
         if restore_error:
             errors.append(restore_error)
+    errors.extend(_remove_created_parents(transaction))
     try:
         if (
             _safe_root_digest(transaction.root_fd)
@@ -1522,6 +1721,9 @@ def _restore_payload(transaction: Transaction) -> str:
         })
     return json.dumps({
         "backup_root": str(transaction.run / "backup"),
+        "created_parent_dirs": [
+            item.relpath for item in transaction.created_parents
+        ],
         "operations": operations,
         "deleted_paths": transaction.manifest.deleted_paths,
         "renamed_paths": transaction.manifest.renamed_paths,
@@ -1568,7 +1770,6 @@ def apply_preview(
             or destination_path.exists()
             or destination_path.is_symlink()
             or not preview_path.exists()
-            or not destination_path.parent.is_dir()
         ):
             _fail(
                 "rename preflight failed: {} -> {}".format(
@@ -1620,7 +1821,7 @@ def apply_preview(
                 item.moved is not None for item in transaction.originals
             ) or any(
                 item.created is not None for item in transaction.outputs
-            ) or bool(transaction.artifacts)
+            ) or bool(transaction.created_parents) or bool(transaction.artifacts)
             if not mutated:
                 if not _cleanup_empty_backup(transaction):
                     raise ApplyError(

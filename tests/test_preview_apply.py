@@ -575,6 +575,162 @@ class PreviewApplyTests(unittest.TestCase):
             self.assertFalse(any(".destarter-quarantine-" in item.name for item in root.rglob("*")))
             self.assertTrue((base / "run" / "reverse.diff").exists())
 
+    def test_apply_creates_missing_parent_for_approved_nested_rename(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "public").mkdir()
+            audit = scan_project(root, ["Northstar", "demo"])
+            path = base / "decisions.json"
+            path.write_text(json.dumps({
+                "brand_mode": "placeholder",
+                "brand_profile": {},
+                "actions": [],
+                "rename_paths": {"app/demo": "public/product/demo"},
+            }), encoding="utf-8")
+            manifest = create_preview(
+                root,
+                base / "run",
+                audit,
+                load_decisions(path, audit),
+            )
+            preview_parent_mode = stat.S_IMODE(
+                (Path(manifest.preview_root) / "public/product").stat().st_mode
+            )
+
+            result = apply_preview(
+                root, base / "run", manifest.approval_token
+            )
+
+            self.assertFalse((root / "app/demo").exists())
+            self.assertTrue((root / "public/product/demo/page.tsx").is_file())
+            self.assertEqual(
+                stat.S_IMODE((root / "public/product").stat().st_mode),
+                preview_parent_mode,
+            )
+            restore = json.loads(
+                Path(result.restore_manifest).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                restore["created_parent_dirs"], ["public/product"]
+            )
+
+    def test_nested_rename_failure_removes_only_created_empty_parents(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "public").mkdir()
+            original = (root / "app/demo/page.tsx").read_bytes()
+            manifest = self._nested_rename_preview(root, base / "run")
+
+            with patch(
+                "destarter_lib.apply._create_outputs",
+                side_effect=OSError("injected nested rename failure"),
+            ):
+                with self.assertRaisesRegex(ApplyError, "rolled back"):
+                    apply_preview(
+                        root, base / "run", manifest.approval_token
+                    )
+
+            self.assertEqual(
+                (root / "app/demo/page.tsx").read_bytes(), original
+            )
+            self.assertFalse((root / "public/product").exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_nested_rename_never_follows_parent_symlink_race(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "public").mkdir()
+            outside = base / "outside"
+            outside.mkdir()
+            guard = outside / "guard.txt"
+            guard.write_text("outside", encoding="utf-8")
+            manifest = self._nested_rename_preview(root, base / "run")
+            from destarter_lib import apply as module
+            real_create = module._create_output_parents
+
+            def inject_symlink(transaction):
+                (root / "public/product").symlink_to(
+                    outside, target_is_directory=True
+                )
+                return real_create(transaction)
+
+            with patch(
+                "destarter_lib.apply._create_output_parents",
+                side_effect=inject_symlink,
+            ):
+                with self.assertRaisesRegex(ApplyError, "parent"):
+                    apply_preview(
+                        root, base / "run", manifest.approval_token
+                    )
+
+            self.assertTrue((root / "public/product").is_symlink())
+            self.assertEqual(guard.read_text(encoding="utf-8"), "outside")
+            self.assertTrue((root / "app/demo/page.tsx").is_file())
+            self.assertFalse((base / "run/backup").exists())
+
+    def test_nested_rename_preserves_file_and_directory_parent_conflicts(self) -> None:
+        for kind in ("file", "directory"):
+            with self.subTest(kind=kind), TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                root = copy_fixture("nextjs-starter", base)
+                (root / "public").mkdir()
+                manifest = self._nested_rename_preview(root, base / "run")
+                conflict = root / "public/product"
+                if kind == "file":
+                    conflict.write_text("user file", encoding="utf-8")
+                else:
+                    conflict.mkdir()
+
+                with self.assertRaisesRegex(ApplyError, "source changed"):
+                    apply_preview(
+                        root, base / "run", manifest.approval_token
+                    )
+
+                if kind == "file":
+                    self.assertEqual(
+                        conflict.read_text(encoding="utf-8"), "user file"
+                    )
+                else:
+                    self.assertTrue(conflict.is_dir())
+                self.assertTrue((root / "app/demo/page.tsx").is_file())
+                self.assertFalse((base / "run/backup").exists())
+
+    def test_nested_rename_rollback_preserves_foreign_parent_content(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = copy_fixture("nextjs-starter", base)
+            (root / "public").mkdir()
+            original = (root / "app/demo/page.tsx").read_bytes()
+            manifest = self._nested_rename_preview(root, base / "run")
+
+            def inject_foreign_content(_transaction):
+                (root / "public/product/user.txt").write_text(
+                    "user data", encoding="utf-8"
+                )
+                raise OSError("injected output failure")
+
+            with patch(
+                "destarter_lib.apply._create_outputs",
+                side_effect=inject_foreign_content,
+            ):
+                with self.assertRaisesRegex(
+                    ApplyError, "rollback failed.*not empty"
+                ):
+                    apply_preview(
+                        root, base / "run", manifest.approval_token
+                    )
+
+            self.assertEqual(
+                (root / "app/demo/page.tsx").read_bytes(), original
+            )
+            self.assertEqual(
+                (root / "public/product/user.txt").read_text(encoding="utf-8"),
+                "user data",
+            )
+
     def test_apply_rolls_back_when_a_mutation_fails(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -1359,6 +1515,22 @@ class PreviewApplyTests(unittest.TestCase):
             "rename_paths": {"app/demo": "app/showcase"},
         }), encoding="utf-8")
         return create_preview(root, run, audit, load_decisions(decisions_path, audit))
+
+    def _nested_rename_preview(self, root: Path, run: Path):
+        audit = scan_project(root, ["Northstar", "demo"])
+        decisions_path = run.parent / "nested-rename-decisions.json"
+        decisions_path.write_text(json.dumps({
+            "brand_mode": "placeholder",
+            "brand_profile": {},
+            "actions": [],
+            "rename_paths": {"app/demo": "public/product/demo"},
+        }), encoding="utf-8")
+        return create_preview(
+            root,
+            run,
+            audit,
+            load_decisions(decisions_path, audit),
+        )
 
 
 if __name__ == "__main__":
