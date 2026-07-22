@@ -43,6 +43,7 @@ _MANIFEST_KEYS = {
     "preview_state_hash", "artifact_hashes",
 }
 _CLEANUP_MANIFEST_KEYS = {"cleanup_empty_dirs", "cleanup_dir_states"}
+_PREVIEW_ROOT_IDENTITY_KEY = "preview_root_identity"
 Identity = Tuple[int, int]
 
 
@@ -162,10 +163,15 @@ def _load_json(path: Path) -> Mapping[str, object]:
     if not isinstance(value, dict):
         _fail("invalid preview manifest")
     keys = set(value)
-    if (
-        keys != _MANIFEST_KEYS
-        and keys != _MANIFEST_KEYS | _CLEANUP_MANIFEST_KEYS
-    ):
+    allowed = {
+        frozenset(_MANIFEST_KEYS),
+        frozenset(_MANIFEST_KEYS | _CLEANUP_MANIFEST_KEYS),
+        frozenset(_MANIFEST_KEYS | {_PREVIEW_ROOT_IDENTITY_KEY}),
+        frozenset(
+            _MANIFEST_KEYS | _CLEANUP_MANIFEST_KEYS | {_PREVIEW_ROOT_IDENTITY_KEY}
+        ),
+    }
+    if frozenset(keys) not in allowed:
         _fail("invalid preview manifest keys")
     return value
 
@@ -285,6 +291,18 @@ def _cleanup_states(
     return dict(sorted(result.items()))
 
 
+def _preview_root_identity(value: object) -> Dict[str, int]:
+    if not isinstance(value, dict) or set(value) != {"device", "inode"}:
+        _fail("invalid manifest preview_root_identity")
+    result = {}
+    for name in ("device", "inode"):
+        item = value[name]
+        if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+            _fail("invalid manifest preview_root_identity")
+        result[name] = item
+    return result
+
+
 def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
     payload = _load_json(run / "manifest.json")
     run_id = _require_string(payload, "run_id")
@@ -303,6 +321,11 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
         payload.get("rename_tree_hashes"), renames
     )
     has_cleanup_fields = _CLEANUP_MANIFEST_KEYS <= set(payload)
+    has_preview_root_identity = _PREVIEW_ROOT_IDENTITY_KEY in payload
+    preview_root_identity = (
+        _preview_root_identity(payload[_PREVIEW_ROOT_IDENTITY_KEY])
+        if has_preview_root_identity else None
+    )
     cleanup = _paths(payload.get("cleanup_empty_dirs", []), "cleanup_empty_dirs")
     cleanup_states = _cleanup_states(
         payload.get("cleanup_dir_states", {}), cleanup
@@ -332,6 +355,7 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
         "renamed_paths": renames,
         "cleanup_empty_dirs": cleanup,
         "cleanup_dir_states": cleanup_states,
+        "preview_root_identity": preview_root_identity,
     }
     additive = {
         name: payload[name]
@@ -345,6 +369,8 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
     if not has_cleanup_fields:
         token_core.pop("cleanup_empty_dirs")
         token_core.pop("cleanup_dir_states")
+    if not has_preview_root_identity:
+        token_core.pop("preview_root_identity")
     if token != _token(dict(token_core, **additive)):
         _fail("manifest approval token is tampered or stale")
     return PreviewManifest(**core, approval_token=token), payload
@@ -406,6 +432,19 @@ def _verify_approval(
         or preview.is_symlink()
     ):
         _fail("preview root does not match run directory")
+    if manifest.preview_root_identity is not None:
+        try:
+            preview_info = preview.lstat()
+        except OSError as error:
+            _fail("preview root identity is unavailable: {}".format(error))
+        if stat.S_ISLNK(preview_info.st_mode) or not stat.S_ISDIR(preview_info.st_mode):
+            _fail("preview root identity is not a real directory")
+        current_identity = {
+            "device": preview_info.st_dev,
+            "inode": preview_info.st_ino,
+        }
+        if current_identity != manifest.preview_root_identity:
+            _fail("preview root identity changed after approval token creation")
     try:
         owner = json.loads((preview / _OWNER_FILE).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -978,6 +1017,13 @@ def _prepare_transaction(
         fds.append(preview_fd)
         if _identity_from_stat(os.fstat(preview_fd)) != _identity_path(preview):
             _fail("preview directory changed while being pinned")
+        if manifest.preview_root_identity is not None and _identity_from_stat(
+            os.fstat(preview_fd)
+        ) != (
+            manifest.preview_root_identity["device"],
+            manifest.preview_root_identity["inode"],
+        ):
+            _fail("preview root identity changed while being pinned")
 
         os.mkdir("backup", 0o700, dir_fd=run_fd)
         backup_fd = os.open(

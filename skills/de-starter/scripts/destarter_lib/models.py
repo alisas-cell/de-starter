@@ -120,6 +120,7 @@ class PreviewManifest:
     deleted_paths: List[str]
     renamed_paths: Dict[str, str]
     approval_token: str
+    preview_root_identity: Optional[Dict[str, int]] = None
     cleanup_empty_dirs: List[str] = field(default_factory=list)
     cleanup_dir_states: Dict[str, Dict[str, object]] = field(default_factory=dict)
 

@@ -1743,6 +1743,110 @@ class PreviewApplyTests(unittest.TestCase):
             substitute_guard,
         )
 
+    def test_preview_refuses_root_replacement_after_manifest_write(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        preview_root = run / "preview"
+        preserved_root = run / "manifest-written-preview"
+        original_safe_write = preview_module.safe_write_text
+        swapped = []
+
+        def replace_root_after_manifest_write(path, text, *args, **kwargs):
+            result = original_safe_write(path, text, *args, **kwargs)
+            if Path(path).name == "manifest.json" and not swapped:
+                preview_root.rename(preserved_root)
+                shutil.copytree(root, preview_root)
+                swapped.append(True)
+            return result
+
+        with patch(
+            "destarter_lib.preview.safe_write_text",
+            side_effect=replace_root_after_manifest_write,
+        ):
+            with self.assertRaisesRegex(ValueError, "preview root changed"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(swapped)
+        self.assertTrue((preserved_root / "public").is_dir())
+        self.assertTrue((preview_root / "public/starter").is_dir())
+
+    def test_apply_refuses_preview_root_identity_drift_before_backup(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=[]),
+        )
+        preview_root = Path(manifest.preview_root)
+        replacement = run / "same-content-different-preview-root"
+        shutil.copytree(preview_root, replacement)
+        shutil.rmtree(preview_root)
+        replacement.rename(preview_root)
+
+        with self.assertRaisesRegex(ApplyError, "preview root identity"):
+            apply_preview(root, run, manifest.approval_token)
+        self.assertFalse((run / "backup").exists())
+
+    def test_apply_preview_root_identity_is_strict_token_bound_and_optional(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=[]),
+        )
+        manifest_path = run / "manifest.json"
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(set(payload["preview_root_identity"]), {"device", "inode"})
+
+        tampered = dict(payload)
+        tampered["preview_root_identity"] = dict(payload["preview_root_identity"])
+        tampered["preview_root_identity"]["inode"] += 1
+        manifest_path.write_text(json.dumps(tampered), encoding="utf-8")
+        with self.assertRaisesRegex(ApplyError, "approval token is tampered"):
+            apply_preview(root, run, manifest.approval_token)
+
+        partial = dict(payload)
+        partial["preview_root_identity"] = {
+            "device": payload["preview_root_identity"]["device"],
+        }
+        manifest_path.write_text(json.dumps(partial), encoding="utf-8")
+        with self.assertRaisesRegex(ApplyError, "invalid manifest preview_root_identity"):
+            apply_preview(root, run, manifest.approval_token)
+
+        legacy = dict(payload)
+        legacy.pop("preview_root_identity")
+        manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
+        with self.assertRaisesRegex(ApplyError, "approval token is tampered"):
+            apply_preview(root, run, manifest.approval_token)
+
+        core_names = (
+            "run_id", "project_root", "preview_root", "source_hashes",
+            "preview_hashes", "delete_tree_hashes", "rename_tree_hashes",
+            "changed_paths", "deleted_paths", "renamed_paths",
+            "cleanup_empty_dirs", "cleanup_dir_states",
+        )
+        additive_names = (
+            "brand_mode", "brand_result_hash", "decision_hash",
+            "source_tree_hash", "preview_tree_hash", "source_state_hash",
+            "preview_state_hash", "artifact_hashes",
+        )
+        legacy_core = {name: legacy[name] for name in core_names}
+        legacy_additive = {name: legacy[name] for name in additive_names}
+        legacy["approval_token"] = preview_module._token(
+            dict(legacy_core, **legacy_additive),
+        )
+        manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
+        result = apply_preview(root, run, legacy["approval_token"])
+        self.assertTrue(Path(result.backup_root).is_dir())
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_preview_snapshot_refuses_a_symlink_inserted_after_cleanup_check(self) -> None:
         root, run, audit = self.cleanup_fixture()
@@ -1833,6 +1937,71 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "outside target must not be accepted\n")
         self.assertTrue(victim.is_file())
         self.assertFalse(victim.is_symlink())
+
+    def test_preview_snapshot_refuses_in_place_file_rewrite_during_fd_read(self) -> None:
+        root, run, _audit = self.cleanup_fixture()
+        victim = root / "snapshot-victim.bin"
+        victim.write_bytes(b"A" * (2 * 1024 * 1024))
+        audit = scan_project(root, ["starter"])
+        preview_victim = run / "preview/snapshot-victim.bin"
+        original_state_hash = preview_module._state_hash
+        original_open = preview_module.os.open
+        original_read = preview_module.os.read
+        active_state_roots = []
+        victim_fds = set()
+        rewritten = []
+
+        def track_state_hash(path, excluded_names=()):
+            active_state_roots.append(Path(path))
+            try:
+                return original_state_hash(path, excluded_names)
+            finally:
+                active_state_roots.pop()
+
+        def record_victim_fd(path, flags, *args, **kwargs):
+            descriptor = original_open(path, flags, *args, **kwargs)
+            if (
+                active_state_roots
+                and active_state_roots[-1].name == "preview"
+                and path == "snapshot-victim.bin"
+            ):
+                victim_fds.add(descriptor)
+            return descriptor
+
+        def rewrite_after_first_chunk(descriptor, count):
+            chunk = original_read(descriptor, count)
+            if descriptor in victim_fds and chunk and not rewritten:
+                with preview_victim.open("r+b") as handle:
+                    handle.seek(0)
+                    handle.write(b"B" * len(chunk))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                rewritten.append(True)
+            return chunk
+
+        with patch(
+            "destarter_lib.preview._state_hash",
+            side_effect=track_state_hash,
+        ), patch(
+            "destarter_lib.preview.os.open",
+            side_effect=record_victim_fd,
+        ), patch(
+            "destarter_lib.preview.os.read",
+            side_effect=rewrite_after_first_chunk,
+        ):
+            with self.assertRaisesRegex(ValueError, "state.*file"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(rewritten)
+        self.assertFalse((run / "manifest.json").exists())
+        self.assertEqual(preview_victim.stat().st_size, 2 * 1024 * 1024)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_preview_cleanup_refuses_an_ancestor_swap_after_final_check(self) -> None:
@@ -2150,7 +2319,7 @@ class PreviewApplyTests(unittest.TestCase):
                 "finding_id": finding.finding_id, "action": "keep",
             }]}), encoding="utf-8")
             kept = create_preview(root, base / "keep-run", audit, load_decisions(keep_path, audit))
-            self.assertEqual(first.approval_token, second.approval_token)
+            self.assertNotEqual(first.approval_token, second.approval_token)
             self.assertNotEqual(first.approval_token, kept.approval_token)
 
     def test_preview_ignores_root_git_file_like_a_worktree(self) -> None:

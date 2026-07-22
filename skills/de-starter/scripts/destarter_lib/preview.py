@@ -135,6 +135,9 @@ def _same_node_and_mode(first: os.stat_result, second: os.stat_result) -> bool:
         and first.st_ino == second.st_ino
         and stat.S_IFMT(first.st_mode) == stat.S_IFMT(second.st_mode)
         and stat.S_IMODE(first.st_mode) == stat.S_IMODE(second.st_mode)
+        and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
+        and first.st_ctime_ns == second.st_ctime_ns
     )
 
 
@@ -1167,6 +1170,10 @@ def create_preview(
         "delete_tree_hashes": delete_tree_hashes, "rename_tree_hashes": rename_tree_hashes,
         "changed_paths": sorted(preview_hashes), "deleted_paths": deleted, "renamed_paths": renames,
         "cleanup_empty_dirs": cleanup, "cleanup_dir_states": cleanup_dir_states,
+        "preview_root_identity": {
+            "device": preview_root_identity[0],
+            "inode": preview_root_identity[1],
+        },
     }
     profile_hash = _token({"brand_profile": decisions.brand_profile})
     brand_result_hash = _token({
@@ -1197,6 +1204,9 @@ def create_preview(
         preview_root, preview_root_fd, preview_root_identity,
     )
     safe_write_text(run / "manifest.json", json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n")
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
 
     safe_write_text(run / "preview.md", "\n".join([
         "# De-starter Preview", "", "- Brand mode: `{}`".format(decisions.brand_mode),
