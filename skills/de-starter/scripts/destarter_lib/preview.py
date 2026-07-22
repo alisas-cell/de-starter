@@ -202,31 +202,147 @@ def _cleanup_directory_states(
     return states
 
 
+def _directory_identity_at(
+    parent_fd: int, name: str, relpath: str,
+) -> Tuple[int, int]:
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError(
+            "cleanup preview directory is missing: {}".format(relpath)
+        ) from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError(
+            "cleanup preview path is not a real directory: {}".format(relpath)
+        )
+    return info.st_dev, info.st_ino
+
+
+def _open_pinned_preview_directory(
+    parent_fd: int, name: str, relpath: str,
+) -> Tuple[int, Tuple[int, int]]:
+    before = _directory_identity_at(parent_fd, name, relpath)
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as error:
+        raise ValueError(
+            "cannot pin cleanup preview directory: {}".format(relpath)
+        ) from error
+    try:
+        opened = os.fstat(descriptor)
+        identity = opened.st_dev, opened.st_ino
+        if before != identity or _directory_identity_at(parent_fd, name, relpath) != identity:
+            raise ValueError(
+                "cleanup preview directory changed while being pinned: {}".format(relpath)
+            )
+        return descriptor, identity
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_pinned_preview_cleanup_dir(
+    preview_root: Path, relpath: str,
+) -> Tuple[int, int, int, Tuple[str, ...], Tuple[Tuple[int, int], ...]]:
+    """Open the cleanup root and all components without following links."""
+    parts = _safe_relpath(relpath).parts
+    try:
+        root_fd = os.open(
+            str(preview_root),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise ValueError("cannot pin preview root for cleanup") from error
+    parent_fd = root_fd
+    terminal_fd = -1
+    identities: List[Tuple[int, int]] = []
+    try:
+        for index, part in enumerate(parts):
+            current = "/".join(parts[:index + 1])
+            child_fd, identity = _open_pinned_preview_directory(
+                parent_fd, part, current,
+            )
+            identities.append(identity)
+            if index == len(parts) - 1:
+                terminal_fd = child_fd
+                break
+            if parent_fd != root_fd:
+                os.close(parent_fd)
+            parent_fd = child_fd
+        return root_fd, parent_fd, terminal_fd, parts, tuple(identities)
+    except Exception:
+        if terminal_fd >= 0:
+            os.close(terminal_fd)
+        if parent_fd != root_fd:
+            os.close(parent_fd)
+        os.close(root_fd)
+        raise
+
+
+def _assert_pinned_preview_cleanup_chain(
+    root_fd: int,
+    parts: Tuple[str, ...],
+    identities: Tuple[Tuple[int, int], ...],
+) -> None:
+    """Ensure no pinned preview component was renamed or link-swapped."""
+    current_fd = os.dup(root_fd)
+    try:
+        for index, part in enumerate(parts):
+            relpath = "/".join(parts[:index + 1])
+            actual = _directory_identity_at(current_fd, part, relpath)
+            if actual != identities[index]:
+                raise ValueError(
+                    "cleanup preview directory changed after inspection: {}".format(relpath)
+                )
+            if index == len(parts) - 1:
+                break
+            next_fd, opened = _open_pinned_preview_directory(
+                current_fd, part, relpath,
+            )
+            if opened != identities[index]:
+                os.close(next_fd)
+                raise ValueError(
+                    "cleanup preview directory changed after inspection: {}".format(relpath)
+                )
+            os.close(current_fd)
+            current_fd = next_fd
+    finally:
+        os.close(current_fd)
+
+
 def _remove_preview_cleanup_dir(
     preview_root: Path,
     relpath: str,
     state: Mapping[str, object],
 ) -> Dict[str, object]:
     """Remove one explicitly approved directory after proving it is empty."""
-    path = preview_root / _safe_relpath(relpath)
+    root_fd, parent_fd, terminal_fd, parts, identities = _open_pinned_preview_cleanup_dir(
+        preview_root, relpath,
+    )
     try:
-        info = path.lstat()
-    except OSError as error:
-        raise ValueError("cleanup preview directory is missing: {}".format(relpath)) from error
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ValueError("cleanup preview path is not a real directory: {}".format(relpath))
-    if stat.S_IMODE(info.st_mode) != state["mode"]:
-        raise ValueError("cleanup preview directory mode changed: {}".format(relpath))
-    try:
-        with os.scandir(path) as entries:
+        info = os.fstat(terminal_fd)
+        if stat.S_IMODE(info.st_mode) != state["mode"]:
+            raise ValueError("cleanup preview directory mode changed: {}".format(relpath))
+        with os.scandir(terminal_fd) as entries:
             if next(entries, None) is not None:
                 raise ValueError("cleanup preview directory is not empty: {}".format(relpath))
+        if (info.st_dev, info.st_ino) != identities[-1]:
+            raise ValueError("cleanup preview directory changed during inspection: {}".format(relpath))
+        _assert_pinned_preview_cleanup_chain(root_fd, parts, identities)
+        if _directory_identity_at(parent_fd, parts[-1], relpath) != identities[-1]:
+            raise ValueError("cleanup preview directory changed before removal: {}".format(relpath))
+        os.rmdir(parts[-1], dir_fd=parent_fd)
     except OSError as error:
-        raise ValueError("cannot inspect cleanup preview directory: {}".format(relpath)) from error
-    try:
-        path.rmdir()
-    except OSError as error:
-        raise ValueError("cannot remove approved empty directory: {}".format(relpath)) from error
+        raise ValueError("cannot inspect or remove cleanup preview directory: {}".format(relpath)) from error
+    finally:
+        os.close(terminal_fd)
+        if parent_fd != root_fd:
+            os.close(parent_fd)
+        os.close(root_fd)
     return {
         "operation": "cleanup-empty-dir",
         "path": relpath,
@@ -547,6 +663,7 @@ def create_preview(
         ], key=lambda item: (item["path"], item["start_line"], item["end_line"])),
         "delete_paths": deleted, "rename_paths": renames,
         "cleanup_empty_dirs": cleanup,
+        "cleanup_dir_states": cleanup_dir_states,
     })
     artifact_hashes = {
         name: sha256_file(run / name)

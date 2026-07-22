@@ -15,6 +15,7 @@ sys.path.insert(0, str(SKILL_SCRIPTS))
 
 from destarter_lib.decisions import load_decisions
 from destarter_lib.models import DecisionSet
+from destarter_lib import preview as preview_module
 from destarter_lib.preview import create_preview
 from destarter_lib.scanner import scan_project
 from destarter_lib.apply import ApplyError, apply_preview
@@ -1471,6 +1472,49 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertFalse((Path(manifest.preview_root) / "public/starter").exists())
         self.assertTrue((Path(manifest.preview_root) / "public").is_dir())
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_preview_cleanup_refuses_an_ancestor_symlink_swap_without_touching_source(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        source = root / "public/starter"
+        preview_public = run / "preview/public"
+        preview_cleanup = preview_public / "starter"
+        original_scandir = preview_module.os.scandir
+        swapped = []
+
+        def replace_preview_ancestor(value):
+            if (
+                not swapped
+                and (
+                    isinstance(value, int)
+                    or Path(value) == preview_cleanup
+                )
+                and preview_public.is_dir()
+                and not preview_public.is_symlink()
+            ):
+                preview_public.rename(run / "preview/public-displaced")
+                preview_public.symlink_to(root / "public", target_is_directory=True)
+                swapped.append(True)
+            return original_scandir(value)
+
+        with patch(
+            "destarter_lib.preview.os.scandir",
+            side_effect=replace_preview_ancestor,
+        ):
+            with self.assertRaisesRegex(ValueError, "cleanup"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(swapped)
+        self.assertTrue(source.is_dir())
+        self.assertFalse(source.is_symlink())
+        self.assertTrue((root / "public").is_dir())
+
     def test_preview_refuses_cleanup_when_a_child_is_not_owned_or_safe(self) -> None:
         cases = ("leftover.txt", "node_modules", ".env", "symlink", "file")
         for case in cases:
@@ -1516,13 +1560,19 @@ class PreviewApplyTests(unittest.TestCase):
         without_cleanup = create_preview(
             root, run, audit, self.cleanup_decisions(root, audit, cleanup=[])
         )
+        without_cleanup_payload = json.loads((run / "manifest.json").read_text())
         with_cleanup = create_preview(
             root,
             run,
             audit,
             self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
         )
+        with_cleanup_payload = json.loads((run / "manifest.json").read_text())
         self.assertNotEqual(without_cleanup.approval_token, with_cleanup.approval_token)
+        self.assertNotEqual(
+            without_cleanup_payload["decision_hash"],
+            with_cleanup_payload["decision_hash"],
+        )
 
         directory = root / "public/starter"
         directory.chmod(0o711)
@@ -1533,7 +1583,12 @@ class PreviewApplyTests(unittest.TestCase):
             mode_audit,
             self.cleanup_decisions(root, mode_audit, cleanup=["public/starter"]),
         )
+        changed_mode_payload = json.loads((run / "manifest.json").read_text())
         self.assertNotEqual(with_cleanup.approval_token, changed_mode.approval_token)
+        self.assertNotEqual(
+            with_cleanup_payload["decision_hash"],
+            changed_mode_payload["decision_hash"],
+        )
         self.assertNotEqual(
             with_cleanup.cleanup_dir_states["public/starter"]["mode"],
             changed_mode.cleanup_dir_states["public/starter"]["mode"],
@@ -1553,7 +1608,12 @@ class PreviewApplyTests(unittest.TestCase):
                 delete_paths=["public/starter/sample-starter.txt"],
             ),
         )
+        changed_state_payload = json.loads((run / "manifest.json").read_text())
         self.assertNotEqual(changed_mode.approval_token, changed_state.approval_token)
+        self.assertNotEqual(
+            changed_mode_payload["decision_hash"],
+            changed_state_payload["decision_hash"],
+        )
         self.assertNotEqual(
             changed_mode.cleanup_dir_states["public/starter"]["state_sha256"],
             changed_state.cleanup_dir_states["public/starter"]["state_sha256"],
