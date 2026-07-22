@@ -1,11 +1,13 @@
 """Strict validation for the user-authored de-starter decision file."""
 
 import json
+import re
+from hashlib import sha256
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Set
+from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
-from .files import IGNORED_DIRS
-from .models import AuditResult, DecisionAction, DecisionSet, Finding, RiskLevel
+from .files import IGNORED_DIRS, is_secret_name
+from .models import AuditResult, DecisionAction, DecisionSet, Finding, RiskLevel, TextEdit
 
 
 REAL_BRAND_FIELDS = {
@@ -21,10 +23,16 @@ PLACEHOLDER_PROFILE = {
     "repository_url": "https://github.com/your-org/your-product",
     "owner": "Your Company",
 }
-_TOP_LEVEL_KEYS = {"brand_mode", "brand_profile", "actions", "delete_paths", "rename_paths"}
+_TOP_LEVEL_KEYS = {
+    "brand_mode", "brand_profile", "actions", "delete_paths", "rename_paths", "text_edits",
+}
 _ACTION_KEYS = {"finding_id", "action", "replacement", "migration_plan", "rollback_plan"}
+_TEXT_EDIT_KEYS = {
+    "path", "expected_sha256", "start_line", "end_line", "replacement", "reason",
+}
 _VALID_ACTIONS = {"keep", "replace"}
 _PROTECTED_FILE_STEMS = {"license", "copying", "notice"}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class DecisionError(ValueError):
@@ -43,6 +51,12 @@ def _error_for_unknown_keys(payload: Mapping[str, object], allowed: Set[str], la
 
 def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise DecisionError("{} must be a positive integer".format(label))
+    return value
 
 
 def _validate_profile(mode: str, raw_profile: object) -> Dict[str, str]:
@@ -102,7 +116,11 @@ def _is_protected_path(path: str) -> bool:
     for part in path.split("/"):
         lowered = part.casefold()
         stem = lowered.split(".", 1)[0]
-        if lowered in IGNORED_DIRS or stem in _PROTECTED_FILE_STEMS:
+        if (
+            lowered in IGNORED_DIRS
+            or stem in _PROTECTED_FILE_STEMS
+            or is_secret_name(part)
+        ):
             return True
     return False
 
@@ -223,7 +241,113 @@ def _validate_actions(raw_actions: object, findings: Mapping[str, Finding]) -> L
     return actions
 
 
-def load_decisions(path: Path, audit: AuditResult) -> DecisionSet:
+def _intersects(start: int, end: int, lines: Set[int]) -> bool:
+    return any(start <= line <= end for line in lines)
+
+
+def _current_text(project_root: Path, relpath: str) -> Tuple[str, str]:
+    if project_root.is_symlink():
+        raise DecisionError("text edit path cannot be a symlink: {}".format(relpath))
+    current = project_root
+    for part in relpath.split("/"):
+        current = current / part
+        if current.is_symlink():
+            raise DecisionError("text edit path cannot be a symlink: {}".format(relpath))
+    try:
+        data = current.read_bytes()
+    except OSError as error:
+        raise DecisionError("text edit file is unavailable: {}".format(relpath)) from error
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise DecisionError("text edit file must be UTF-8 text: {}".format(relpath)) from error
+    return text, sha256(data).hexdigest()
+
+
+def _validate_text_edits(
+    raw_edits: object,
+    audit: AuditResult,
+    actions: List[DecisionAction],
+    project_root: Optional[Path],
+) -> List[TextEdit]:
+    if not isinstance(raw_edits, list):
+        raise DecisionError("text_edits must be a list")
+    if raw_edits and project_root is None:
+        raise DecisionError("text edits require project_root")
+
+    audited_files = {item.relpath: item for item in audit.files}
+    if len(audited_files) != len(audit.files):
+        raise DecisionError("audit contains duplicate file records")
+    findings = {item.finding_id: item for item in audit.findings}
+    protected_lines: Dict[str, Set[int]] = {}
+    for finding in audit.findings:
+        if finding.risk in {RiskLevel.P0, RiskLevel.P1} and finding.line > 0:
+            protected_lines.setdefault(finding.relpath, set()).add(finding.line)
+    action_lines: Dict[str, Set[int]] = {}
+    for action in actions:
+        finding = findings[action.finding_id]
+        if finding.line > 0:
+            action_lines.setdefault(finding.relpath, set()).add(finding.line)
+
+    edits = []
+    for raw in raw_edits:
+        if not isinstance(raw, dict):
+            raise DecisionError("text_edits must contain objects")
+        _error_for_unknown_keys(raw, _TEXT_EDIT_KEYS, "text edit")
+        edit_path = _project_path(raw.get("path"), "text edit path")
+        if _is_protected_path(edit_path):
+            raise DecisionError("text edit path contains protected finding: invariant path {}".format(edit_path))
+        record = audited_files.get(edit_path)
+        if record is None:
+            raise DecisionError("text edit path must be an audited text file: {}".format(edit_path))
+        if not record.is_text:
+            raise DecisionError("text edit path must be an audited text file: {}".format(edit_path))
+        expected_hash = raw.get("expected_sha256")
+        if not isinstance(expected_hash, str) or not _SHA256_RE.fullmatch(expected_hash):
+            raise DecisionError("text edit hash must be a lowercase SHA-256")
+        if expected_hash != record.sha256:
+            raise DecisionError("text edit hash does not match audit: {}".format(edit_path))
+        start_line = _positive_int(raw.get("start_line"), "text edit start_line")
+        end_line = _positive_int(raw.get("end_line"), "text edit end_line")
+        if end_line < start_line:
+            raise DecisionError("text edit end_line must not precede start_line")
+        replacement = raw.get("replacement")
+        if not isinstance(replacement, str):
+            raise DecisionError("text edit replacement must be a string")
+        reason = raw.get("reason")
+        if not _non_empty_string(reason):
+            raise DecisionError("text edit reason must be a non-empty string")
+        if _intersects(start_line, end_line, protected_lines.get(edit_path, set())):
+            raise DecisionError("text edit overlaps protected P0/P1 line: {}".format(edit_path))
+        if _intersects(start_line, end_line, action_lines.get(edit_path, set())):
+            raise DecisionError("text edit overlaps finding action: {}".format(edit_path))
+        text, current_hash = _current_text(project_root, edit_path)
+        if current_hash != expected_hash:
+            raise DecisionError("text edit hash does not match current file: {}".format(edit_path))
+        line_count = len(text.splitlines())
+        if end_line > line_count:
+            raise DecisionError("text edit line range is outside file: {}".format(edit_path))
+        edits.append(TextEdit(
+            path=edit_path,
+            expected_sha256=expected_hash,
+            start_line=start_line,
+            end_line=end_line,
+            replacement=replacement,
+            reason=reason,
+        ))
+
+    ordered = sorted(edits, key=lambda item: (item.path, item.start_line, item.end_line))
+    for previous, current in zip(ordered, ordered[1:]):
+        if previous.path == current.path and current.start_line <= previous.end_line:
+            raise DecisionError("text edits overlap: {}".format(current.path))
+    return ordered
+
+
+def load_decisions(
+    path: Path,
+    audit: AuditResult,
+    project_root: Optional[Path] = None,
+) -> DecisionSet:
     """Load a decision file only when every requested change is explicit and safe."""
     payload = _load_payload(path)
     _error_for_unknown_keys(payload, _TOP_LEVEL_KEYS, "decision")
@@ -291,4 +415,7 @@ def load_decisions(path: Path, audit: AuditResult) -> DecisionSet:
     _validate_audited_paths(audit, rename_paths, "rename")
     _validate_protected_paths(audit, delete_paths, "delete")
     _validate_protected_paths(audit, rename_paths, "rename")
-    return DecisionSet(mode, profile, actions, delete_paths, rename_paths)
+    text_edits = _validate_text_edits(
+        payload.get("text_edits", []), audit, actions, project_root
+    )
+    return DecisionSet(mode, profile, actions, delete_paths, rename_paths, text_edits)
