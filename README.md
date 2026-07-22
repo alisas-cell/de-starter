@@ -22,7 +22,7 @@ Replace `YOUR_ACCOUNT` with the repository owner after publication.
 $de-starter Audit this repository and show the report and proposed diff before making changes.
 ```
 
-The Skill discovers source identities, asks for a real brand or neutral placeholders, produces an audit, records Demo/sample decisions, generates a project-external preview, stops for approval, applies only the approved token, validates the project, and scans again.
+The Skill discovers source identities, asks for a real brand or neutral placeholders, produces an audit, records Demo/sample decisions and explicitly scoped semantic edits, generates a project-external preview, stops for approval, applies only the approved token, validates the project, and scans again. Semantic edits require an audited file hash, inclusive line range, replacement, and a named purpose at gate one; their safe metadata is written to `semantic-edits.json` for gate two.
 
 ## Risk levels
 
@@ -35,7 +35,7 @@ The Skill discovers source identities, asks for a real brand or neutral placehol
 
 ## Artifacts
 
-Each run writes `audit.md`, `audit.json`, `preview.md`, `preview.diff`, `binary-changes.json`, `placeholders.json`, `manifest.json`, backups, `reverse.diff`, and `restore.json` outside the target project. Git is optional; non-Git projects use hashes and verified backups.
+Each run writes `audit.md`, `audit.json`, `preview.md`, private `preview.diff`, `binary-changes.json`, `placeholders.json`, `semantic-edits.json`, `manifest.json`, backups, `reverse.diff`, and `restore.json` outside the target project. Git is optional; non-Git projects use hashes and verified backups. Use redacted screenshots or summaries for public updates; do not publish the full diff or source excerpts.
 
 ## Test
 

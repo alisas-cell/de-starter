@@ -59,6 +59,87 @@ class CliEndToEndTests(unittest.TestCase):
             self.assertTrue((run / "verification" / "audit.json").is_file())
             self.assertIn("remaining", verified.stdout.lower())
 
+    def test_semantic_lifecycle_removes_approved_testimonial_without_touching_protected_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "synthetic-project"
+            (root / "app").mkdir(parents=True)
+            (root / "components").mkdir()
+            (root / "app" / "page.tsx").write_text(
+                "import { Testimonials } from '../components/testimonials';\n\n"
+                "export default function Page() {\n"
+                "  return <main><h1>Neutral product</h1><Testimonials /></main>;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (root / "components" / "testimonials.tsx").write_text(
+                "export function Testimonials() {\n"
+                "  return <blockquote>Northstar customer quote</blockquote>;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            license_path = root / "LICENSE"
+            license_path.write_text("MIT License\nCopyright (c) Northstar Labs\n", encoding="utf-8")
+            p1_path = root / "config.ts"
+            p1_path.write_text('export const PLAN_ID = "northstar_monthly";\n', encoding="utf-8")
+            run = base / "run"
+            source = self.write_json(base / "source.json", {"source_terms": ["Northstar"]})
+
+            audited = self.run_cli("audit", "--project", str(root), "--run-dir", str(run), "--source-config", str(source))
+            self.assertEqual(audited.returncode, 0, audited.stderr)
+            audit = json.loads((run / "audit.json").read_text(encoding="utf-8"))
+            page_record = next(item for item in audit["files"] if item["relpath"] == "app/page.tsx")
+            self.assertTrue(any(
+                item["relpath"] == "components/testimonials.tsx" and item["risk"] == "P2"
+                for item in audit["findings"]
+            ))
+            self.assertTrue(any(
+                item["relpath"] == "config.ts" and item["risk"] == "P1"
+                for item in audit["findings"]
+            ))
+            decisions = self.write_json(base / "decisions.json", {
+                "brand_mode": "placeholder",
+                "brand_profile": {},
+                "actions": [],
+                "delete_paths": ["components/testimonials.tsx"],
+                "text_edits": [{
+                    "path": "app/page.tsx",
+                    "expected_sha256": page_record["sha256"],
+                    "start_line": 1,
+                    "end_line": 5,
+                    "replacement": (
+                        "export default function Page() {\n"
+                        "  return <main><h1>Neutral product</h1></main>;\n"
+                        "}\n"
+                    ),
+                    "reason": "Remove the approved testimonial import and usage",
+                }],
+            })
+            license_before = license_path.read_text(encoding="utf-8")
+            p1_before = p1_path.read_text(encoding="utf-8")
+
+            preview = self.run_cli("preview", "--project", str(root), "--run-dir", str(run), "--decisions", str(decisions))
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            token = preview.stdout.strip().splitlines()[-1]
+            self.assertFalse((run / "preview" / "components" / "testimonials.tsx").exists())
+            preview_page = (run / "preview" / "app" / "page.tsx").read_text(encoding="utf-8")
+            self.assertNotIn("Testimonials", preview_page)
+            self.assertEqual((root / "app" / "page.tsx").read_text(encoding="utf-8").splitlines()[0], "import { Testimonials } from '../components/testimonials';")
+            self.assertTrue((run / "semantic-edits.json").is_file())
+
+            applied = self.run_cli("apply", "--project", str(root), "--run-dir", str(run), "--approval-token", token)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertFalse((root / "components" / "testimonials.tsx").exists())
+            page_after = (root / "app" / "page.tsx").read_text(encoding="utf-8")
+            self.assertNotIn("Testimonials", page_after)
+            self.assertEqual(license_path.read_text(encoding="utf-8"), license_before)
+            self.assertEqual(p1_path.read_text(encoding="utf-8"), p1_before)
+
+            verified = self.run_cli("verify", "--project", str(root), "--run-dir", str(run), "--source-config", str(source))
+            self.assertEqual(verified.returncode, 3, verified.stderr)
+            verification = json.loads((run / "verification" / "audit.json").read_text(encoding="utf-8"))
+            self.assertFalse(any(item["relpath"] == "components/testimonials.tsx" for item in verification["findings"]))
+
     def test_rejects_internal_ancestor_and_symlink_run_dirs_without_writes(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)

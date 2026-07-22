@@ -12,7 +12,7 @@ Its complete schema is exactly `{"source_terms":[...]}`. `source_terms` is a non
 
 ## `decisions.json`
 
-Only these top-level keys are allowed: `brand_mode`, `brand_profile`, `actions`, `delete_paths`, `rename_paths`. `brand_mode` is `real` or `placeholder`; `brand_profile` follows [Brand Profile](brand-profile.md). `actions` is an array of unique finding decisions:
+Only these top-level keys are allowed: `brand_mode`, `brand_profile`, `actions`, `delete_paths`, `rename_paths`, `text_edits`. `brand_mode` is `real` or `placeholder`; `brand_profile` follows [Brand Profile](brand-profile.md). `actions` is an array of unique finding decisions:
 
 ```json
 {
@@ -23,8 +23,20 @@ Only these top-level keys are allowed: `brand_mode`, `brand_profile`, `actions`,
     {"finding_id":"F-p1","action":"replace","replacement":"new_key","migration_plan":"migrate stored values","rollback_plan":"restore prior values"}
   ],
   "delete_paths": ["demo"],
-  "rename_paths": {"public/starter-logo.svg":"public/product-logo.svg"}
+  "rename_paths": {"public/starter-logo.svg":"public/product-logo.svg"},
+  "text_edits": [
+    {
+      "path":"app/page.tsx",
+      "expected_sha256":"<the audited lowercase SHA-256 for app/page.tsx>",
+      "start_line":1,
+      "end_line":4,
+      "replacement":"export default function Page() { return <main />; }\\n",
+      "reason":"Remove the approved sample component import and usage"
+    }
+  ]
 }
 ```
 
 An action is `keep` or `replace`; `replace` needs `replacement`. P1 replacements also need nonempty `migration_plan` and `rollback_plan`. Under this Skill, omit P0 findings from `actions` entirely: the runtime accepts `keep`, but the product contract deliberately keeps P0 out of actions. `delete_paths` removes only an audited P2 scope after explicit confirmation. `rename_paths` maps audited P2 or path-finding source paths to distinct, project-relative destinations; it cannot overlap deletes or other rename paths.
+
+`text_edits` is an array of scoped semantic edits. Each edit has exactly `path`, `expected_sha256`, `start_line`, `end_line`, `replacement`, and `reason`. `path` must name an audited UTF-8 text file inside the project; `expected_sha256` must equal its audited lowercase SHA-256 and current file hash; `start_line` and `end_line` are inclusive positive line numbers; `replacement` is a string; and `reason` states the approved purpose. Ranges cannot overlap, protected P0/P1 lines, or separately actioned findings. Record the named path and purpose at gate one; the preview writes private `semantic-edits.json` metadata for gate two.

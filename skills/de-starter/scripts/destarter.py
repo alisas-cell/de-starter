@@ -186,7 +186,8 @@ def main(argv: Sequence[str] = ()) -> int:
         audit = _load_audit(run / "audit.json")
         if audit_to_dict(audit) != audit_to_dict(scan_project(root, audit.source_terms)):
             raise CliError("audit does not match current scan")
-        manifest = create_preview(root, run, audit, load_decisions(args.decisions, audit))
+        decisions = load_decisions(args.decisions, audit, root)
+        manifest = create_preview(root, run, audit, decisions)
         print(run / "preview.diff")
         print(manifest.approval_token)
     else:
