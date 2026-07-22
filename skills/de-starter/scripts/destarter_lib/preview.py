@@ -1,11 +1,14 @@
 """Create reviewable, project-external de-starter previews without touching source."""
 
+import ctypes
 import difflib
+import errno
 import json
 import os
 import re
 import shutil
 import stat
+import sys
 import uuid
 from dataclasses import asdict
 from hashlib import sha256
@@ -128,20 +131,46 @@ def _assert_source_unchanged(
 def _state_hash(root: Path, excluded_names: Iterable[str] = ()) -> str:
     """Bind every safe file, directory (including empty ones), and permission mode."""
     excluded = set(excluded_names)
+    try:
+        root_info = root.lstat()
+    except OSError as error:
+        raise ValueError("preview state root is unavailable") from error
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError("preview state contains unsafe root object")
     entries = []
     for directory, dirs, files in os.walk(str(root), followlinks=False):
         current = Path(directory)
+        try:
+            current_info = current.lstat()
+        except OSError as error:
+            raise ValueError("preview state directory is unavailable") from error
+        if stat.S_ISLNK(current_info.st_mode) or not stat.S_ISDIR(current_info.st_mode):
+            raise ValueError("preview state contains unsafe directory object")
         dirs[:] = [name for name in dirs if not _is_ignored_name(name) and not _is_secret_name(name)]
         rel_dir = current.relative_to(root).as_posix()
-        entries.append({"kind": "dir", "path": rel_dir, "mode": stat.S_IMODE(current.stat().st_mode)})
+        entries.append({"kind": "dir", "path": rel_dir, "mode": stat.S_IMODE(current_info.st_mode)})
+        for name in sorted(dirs):
+            path = current / name
+            try:
+                info = path.lstat()
+            except OSError as error:
+                raise ValueError("preview state directory entry is unavailable") from error
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise ValueError("preview state contains symlink or unsupported directory entry")
         for name in sorted(files):
             if name in excluded or _is_ignored_name(name) or _is_secret_name(name):
                 continue
             path = current / name
-            if path.is_symlink() or not path.is_file():
-                continue
+            try:
+                info = path.lstat()
+            except OSError as error:
+                raise ValueError("preview state file entry is unavailable") from error
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError("preview state contains symlink file entry")
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("preview state contains unsupported file entry")
             entries.append({"kind": "file", "path": path.relative_to(root).as_posix(),
-                            "mode": stat.S_IMODE(path.stat().st_mode), "sha256": sha256_file(path)})
+                            "mode": stat.S_IMODE(info.st_mode), "sha256": sha256_file(path)})
     return _token({"state": sorted(entries, key=lambda item: (str(item["path"]), str(item["kind"])))})
 
 
@@ -409,6 +438,79 @@ def _cleanup_staging_name(relpath: str) -> str:
     return "cleanup-{}".format(sha256(relpath.encode("utf-8")).hexdigest())
 
 
+def _atomic_rename_no_replace(
+    source: str,
+    destination: str,
+    *,
+    src_dir_fd: int,
+    dst_dir_fd: int,
+) -> None:
+    """Move one descriptor-relative name without ever replacing its destination."""
+    if (
+        not isinstance(source, str)
+        or not isinstance(destination, str)
+        or not source
+        or not destination
+        or "/" in source
+        or "/" in destination
+        or "\x00" in source
+        or "\x00" in destination
+        or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (src_dir_fd, dst_dir_fd)
+        )
+    ):
+        raise ValueError("invalid atomic no-clobber rename component")
+    try:
+        source_bytes = os.fsencode(source)
+        destination_bytes = os.fsencode(destination)
+    except (TypeError, UnicodeError) as error:
+        raise ValueError("invalid atomic no-clobber rename component") from error
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        primitive = getattr(libc, "renameatx_np", None)
+        flags = 0x4  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        primitive = getattr(libc, "renameat2", None)
+        flags = 0x1  # RENAME_NOREPLACE
+    else:
+        primitive = None
+        flags = 0
+    if primitive is None:
+        raise ValueError("atomic no-clobber rename unavailable")
+    primitive.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    primitive.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = primitive(
+        src_dir_fd,
+        source_bytes,
+        dst_dir_fd,
+        destination_bytes,
+        flags,
+    )
+    if result == 0:
+        return
+    error_code = ctypes.get_errno()
+    if error_code == errno.EEXIST:
+        raise ValueError("cleanup staging destination already exists")
+    unsupported = {
+        errno.EINVAL,
+        errno.ENOSYS,
+        getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),
+        errno.EOPNOTSUPP,
+    }
+    if error_code in unsupported:
+        raise ValueError("atomic no-clobber rename unavailable")
+    detail = os.strerror(error_code) if error_code else "unknown failure"
+    raise ValueError("atomic no-clobber rename failed: {}".format(detail))
+
+
 def _isolate_preview_cleanup_dir(
     root_fd: int,
     parent_fd: int,
@@ -426,14 +528,11 @@ def _isolate_preview_cleanup_dir(
     staging_name = _cleanup_staging_name(relpath)
     if not _entry_absent(staging_fd, staging_name):
         raise ValueError("cleanup staging entry already exists")
-    try:
-        os.rename(
-            parts[-1], staging_name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=staging_fd,
-        )
-    except OSError as error:
-        raise ValueError("cannot isolate cleanup preview directory: {}".format(relpath)) from error
+    _atomic_rename_no_replace(
+        parts[-1], staging_name,
+        src_dir_fd=parent_fd,
+        dst_dir_fd=staging_fd,
+    )
     return staging_name
 
 

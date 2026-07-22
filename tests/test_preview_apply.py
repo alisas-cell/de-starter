@@ -1525,6 +1525,7 @@ class PreviewApplyTests(unittest.TestCase):
         audit = scan_project(root, ["starter"])
         preview_cleanup = run / "preview/public/starter"
         original_rename = preview_module.os.rename
+        original_atomic_move = preview_module._atomic_rename_no_replace
         swapped = []
 
         def swap_terminal_before_isolation(source, destination, *args, **kwargs):
@@ -1538,10 +1539,10 @@ class PreviewApplyTests(unittest.TestCase):
                 )
                 original_rename(str(source_object), str(preview_cleanup))
                 swapped.append(True)
-            return original_rename(source, destination, *args, **kwargs)
+            return original_atomic_move(source, destination, *args, **kwargs)
 
         with patch(
-            "destarter_lib.preview.os.rename",
+            "destarter_lib.preview._atomic_rename_no_replace",
             side_effect=swap_terminal_before_isolation,
         ):
             with self.assertRaisesRegex(ValueError, "cleanup"):
@@ -1610,6 +1611,103 @@ class PreviewApplyTests(unittest.TestCase):
             for path in staging_dirs[0].iterdir()
         ))
 
+    def test_preview_cleanup_never_overwrites_a_raced_staging_destination(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        original_absent = preview_module._entry_absent
+        foreign_identity = []
+
+        def insert_foreign_after_staging_probe(parent_fd, name):
+            result = original_absent(parent_fd, name)
+            if result and name.startswith("cleanup-") and not foreign_identity:
+                staging_dirs = [
+                    path for path in run.iterdir()
+                    if path.name.startswith(".destarter-preview-cleanup-")
+                ]
+                self.assertEqual(len(staging_dirs), 1)
+                foreign = staging_dirs[0] / name
+                foreign.mkdir()
+                info = foreign.lstat()
+                foreign_identity.append((foreign, info.st_dev, info.st_ino))
+            return result
+
+        with patch(
+            "destarter_lib.preview._entry_absent",
+            side_effect=insert_foreign_after_staging_probe,
+        ):
+            with self.assertRaisesRegex(ValueError, "cleanup"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(foreign_identity)
+        foreign, device, inode = foreign_identity[0]
+        info = foreign.lstat()
+        self.assertEqual((info.st_dev, info.st_ino), (device, inode))
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertFalse((run / "manifest.json").exists())
+
+    def test_preview_cleanup_refuses_when_atomic_no_clobber_is_unavailable(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+
+        with patch(
+            "destarter_lib.preview._atomic_rename_no_replace",
+            side_effect=ValueError("atomic no-clobber rename unavailable"),
+            create=True,
+        ) as atomic_move:
+            with self.assertRaisesRegex(ValueError, "atomic no-clobber"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(atomic_move.called)
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertFalse((run / "manifest.json").exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_preview_snapshot_refuses_a_symlink_inserted_after_cleanup_check(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        source_guard = root / "source-guard.txt"
+        source_guard.write_text("source remains intact\n", encoding="utf-8")
+        audit = scan_project(root, ["starter"])
+        original_state_hash = preview_module._state_hash
+        injected = []
+
+        def insert_symlink_before_snapshot(path, excluded_names=()):
+            if Path(path).name == "preview" and not injected:
+                (run / "preview/late-link").symlink_to(
+                    root / "source-guard.txt",
+                )
+                injected.append(True)
+            return original_state_hash(path, excluded_names)
+
+        with patch(
+            "destarter_lib.preview._state_hash",
+            side_effect=insert_symlink_before_snapshot,
+        ):
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(injected)
+        self.assertFalse((run / "manifest.json").exists())
+        self.assertEqual(source_guard.read_text(encoding="utf-8"), "source remains intact\n")
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_preview_cleanup_refuses_an_ancestor_swap_after_final_check(self) -> None:
         root, run, audit = self.cleanup_fixture()
@@ -1618,6 +1716,7 @@ class PreviewApplyTests(unittest.TestCase):
         audit = scan_project(root, ["starter"])
         preview_public = run / "preview/public"
         original_rename = preview_module.os.rename
+        original_atomic_move = preview_module._atomic_rename_no_replace
         swapped = []
 
         def swap_ancestor_before_isolation(source, destination, *args, **kwargs):
@@ -1631,10 +1730,10 @@ class PreviewApplyTests(unittest.TestCase):
                 )
                 preview_public.symlink_to(root / "public", target_is_directory=True)
                 swapped.append(True)
-            return original_rename(source, destination, *args, **kwargs)
+            return original_atomic_move(source, destination, *args, **kwargs)
 
         with patch(
-            "destarter_lib.preview.os.rename",
+            "destarter_lib.preview._atomic_rename_no_replace",
             side_effect=swap_ancestor_before_isolation,
         ):
             with self.assertRaisesRegex(ValueError, "cleanup"):
