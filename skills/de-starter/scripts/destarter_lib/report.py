@@ -19,9 +19,9 @@ def redact_evidence(value: str) -> str:
     )
 
 
-def _ordered_findings(audit: AuditResult):
+def _ordered_findings(findings):
     return sorted(
-        audit.findings,
+        findings,
         key=lambda item: (
             RISK_ORDER[item.risk.value],
             item.relpath,
@@ -44,9 +44,18 @@ def audit_to_dict(audit: AuditResult) -> Dict[str, object]:
                 "risk": item.risk.value,
                 "evidence": redact_evidence(item.evidence),
             }
-            for item in _ordered_findings(audit)
+            for item in _ordered_findings(audit.findings)
         ],
         "files": [asdict(item) for item in audit.files],
+        "directories": [asdict(item) for item in audit.directories],
+        "directory_findings": [
+            {
+                **asdict(item),
+                "risk": item.risk.value,
+                "evidence": redact_evidence(item.evidence),
+            }
+            for item in _ordered_findings(audit.directory_findings)
+        ],
     }
 
 
@@ -63,6 +72,7 @@ def write_audit_reports(audit: AuditResult, run_dir: Path) -> None:
         "- Git present: `{}`".format(str(audit.project.git_present).lower()),
         "- Git dirty: `{}`".format(audit.project.git_dirty),
         "- Findings: `{}`".format(len(audit.findings)),
+        "- Directory findings: `{}`".format(len(audit.directory_findings)),
         "- Confirmed source terms: `{}`".format(", ".join(audit.source_terms)),
         "",
         "## Findings",
@@ -70,7 +80,7 @@ def write_audit_reports(audit: AuditResult, run_dir: Path) -> None:
         "| ID | Risk | Category | Location | Evidence |",
         "| --- | --- | --- | --- | --- |",
     ]
-    for item in _ordered_findings(audit):
+    for item in _ordered_findings(audit.findings):
         evidence = redact_evidence(item.evidence).replace("|", "\\|").replace("`", "'")
         lines.append(
             "| {} | {} | {} | `{}:{}:{}` | {} |".format(
@@ -80,6 +90,30 @@ def write_audit_reports(audit: AuditResult, run_dir: Path) -> None:
                 item.relpath,
                 item.line,
                 item.column,
+                evidence,
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Directory residue",
+            "",
+            "- Directories inventoried: `{}`".format(len(audit.directories)),
+            "- Directory findings: `{}`".format(len(audit.directory_findings)),
+            "",
+            "| ID | Risk | Location | Empty | Evidence |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+    )
+    directories = {item.relpath: item for item in audit.directories}
+    for item in _ordered_findings(audit.directory_findings):
+        evidence = redact_evidence(item.evidence).replace("|", "\\|").replace("`", "'")
+        lines.append(
+            "| {} | {} | `{}` | {} | {} |".format(
+                item.finding_id,
+                item.risk.value,
+                item.relpath,
+                str(directories[item.relpath].is_empty).lower(),
                 evidence,
             )
         )

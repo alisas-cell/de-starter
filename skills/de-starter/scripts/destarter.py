@@ -13,7 +13,14 @@ from destarter_lib.apply import ApplyError, apply_preview
 from destarter_lib.candidates import discover_candidates
 from destarter_lib.decisions import DecisionError, load_decisions
 from destarter_lib.files import iter_project_files, safe_write_text
-from destarter_lib.models import AuditResult, FileRecord, Finding, ProjectFacts, RiskLevel
+from destarter_lib.models import (
+    AuditResult,
+    DirectoryRecord,
+    FileRecord,
+    Finding,
+    ProjectFacts,
+    RiskLevel,
+)
 from destarter_lib.preview import create_preview
 from destarter_lib.report import audit_to_dict, redact_evidence, write_audit_reports
 from destarter_lib.scanner import _source_terms as canonical_source_terms, scan_project
@@ -110,8 +117,35 @@ def _audit_dict(value: object, label: str, keys: set) -> Mapping[str, Any]:
     return value
 
 
+def _load_finding(value: object, label: str) -> Finding:
+    item = _audit_dict(value, label, {"finding_id", "relpath", "line", "column", "matched", "category", "risk", "evidence", "sha256"})
+    if (any(not isinstance(item[name], str) or not item[name] for name in ("finding_id", "matched", "category", "evidence"))
+            or any(type(item[name]) is not int or item[name] < 0 for name in ("line", "column"))):
+        raise CliError("invalid audit {}".format(label))
+    try:
+        risk = RiskLevel(item["risk"])
+    except (ValueError, TypeError) as error:
+        raise CliError("invalid audit risk") from error
+    if redact_evidence(item["evidence"]) != item["evidence"]:
+        raise CliError("invalid audit secret evidence")
+    return Finding(
+        item["finding_id"],
+        _relpath(item["relpath"], "finding path"),
+        item["line"],
+        item["column"],
+        item["matched"],
+        item["category"],
+        risk,
+        item["evidence"],
+        _sha(item["sha256"], "finding hash"),
+    )
+
+
 def _load_audit(path: Path) -> AuditResult:
-    payload = _audit_dict(_json(path, "audit"), "schema", {"project", "source_terms", "findings", "files"})
+    payload = _audit_dict(_json(path, "audit"), "schema", {
+        "project", "source_terms", "findings", "files", "directories",
+        "directory_findings",
+    })
     source_terms = payload["source_terms"]
     if not isinstance(source_terms, list) or not source_terms or any(not isinstance(item, str) or not item.strip() for item in source_terms):
         raise CliError("invalid audit source_terms")
@@ -133,24 +167,45 @@ def _load_audit(path: Path) -> AuditResult:
         files.append(FileRecord(_relpath(item["relpath"], "file path"), item["size"], _sha(item["sha256"], "file hash"), item["is_text"]))
     if len({item.relpath for item in files}) != len(files):
         raise CliError("invalid audit duplicate file")
-    findings = []
     if not isinstance(payload["findings"], list):
         raise CliError("invalid audit findings")
-    for value in payload["findings"]:
-        item = _audit_dict(value, "finding", {"finding_id", "relpath", "line", "column", "matched", "category", "risk", "evidence", "sha256"})
-        if (any(not isinstance(item[name], str) or not item[name] for name in ("finding_id", "matched", "category", "evidence"))
-                or any(type(item[name]) is not int or item[name] < 0 for name in ("line", "column"))):
-            raise CliError("invalid audit finding")
-        try:
-            risk = RiskLevel(item["risk"])
-        except (ValueError, TypeError) as error:
-            raise CliError("invalid audit risk") from error
-        if redact_evidence(item["evidence"]) != item["evidence"]:
-            raise CliError("invalid audit secret evidence")
-        findings.append(Finding(item["finding_id"], _relpath(item["relpath"], "finding path"), item["line"], item["column"], item["matched"], item["category"], risk, item["evidence"], _sha(item["sha256"], "finding hash")))
+    findings = [_load_finding(value, "finding") for value in payload["findings"]]
     if len({item.finding_id for item in findings}) != len(findings):
         raise CliError("invalid audit duplicate finding")
-    return AuditResult(ProjectFacts(**project_raw), list(source_terms), findings, files)
+    directories = []
+    if not isinstance(payload["directories"], list):
+        raise CliError("invalid audit directories")
+    for value in payload["directories"]:
+        item = _audit_dict(value, "directory", {"relpath", "mode", "state_sha256", "is_empty"})
+        if (type(item["mode"]) is not int or item["mode"] < 0 or item["mode"] > 0o777
+                or type(item["is_empty"]) is not bool):
+            raise CliError("invalid audit directory")
+        directories.append(DirectoryRecord(
+            _relpath(item["relpath"], "directory path"),
+            item["mode"],
+            _sha(item["state_sha256"], "directory state hash"),
+            item["is_empty"],
+        ))
+    if len({item.relpath for item in directories}) != len(directories):
+        raise CliError("invalid audit duplicate directory")
+    if not isinstance(payload["directory_findings"], list):
+        raise CliError("invalid audit directory findings")
+    directory_findings = [
+        _load_finding(value, "directory finding")
+        for value in payload["directory_findings"]
+    ]
+    if len({item.finding_id for item in directory_findings}) != len(directory_findings):
+        raise CliError("invalid audit duplicate directory finding")
+    directories_by_path = {item.relpath: item for item in directories}
+    for finding in directory_findings:
+        directory = directories_by_path.get(finding.relpath)
+        if (finding.line != 0 or finding.category != "directory-name"
+                or directory is None or finding.sha256 != directory.state_sha256):
+            raise CliError("invalid audit directory finding")
+    return AuditResult(
+        ProjectFacts(**project_raw), list(source_terms), findings, files,
+        directories, directory_findings,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

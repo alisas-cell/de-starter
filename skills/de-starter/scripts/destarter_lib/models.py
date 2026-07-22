@@ -19,6 +19,14 @@ class FileRecord:
 
 
 @dataclass(frozen=True)
+class DirectoryRecord:
+    relpath: str
+    mode: int
+    state_sha256: str
+    is_empty: bool
+
+
+@dataclass(frozen=True)
 class Candidate:
     kind: str
     value: str
@@ -53,6 +61,7 @@ class DiscoveryResult:
     project: ProjectFacts
     candidates: List[Candidate]
     files: List[FileRecord]
+    directories: List[DirectoryRecord] = field(default_factory=list)
 
 
 @dataclass
@@ -61,6 +70,8 @@ class AuditResult:
     source_terms: List[str]
     findings: List[Finding]
     files: List[FileRecord]
+    directories: List[DirectoryRecord] = field(default_factory=list)
+    directory_findings: List[Finding] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

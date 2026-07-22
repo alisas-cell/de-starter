@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Sequence, Tuple
 
 from .adapters import detect_project
-from .files import iter_project_files, read_text
+from .files import iter_project_directories, iter_project_files, read_text
 from .models import AuditResult, Finding, RiskLevel
 
 
@@ -81,7 +81,32 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
     """Find confirmed source terms and high-risk literal secrets in a project."""
     terms = _source_terms(source_terms)
     files = list(iter_project_files(project_root))
+    directories = list(iter_project_directories(project_root))
     findings = []
+    directory_findings = []
+
+    for record in directories:
+        for term in terms:
+            for match in re.finditer(re.escape(term), record.relpath, re.I):
+                risk, _ = _risk(record.relpath, "")
+                raw_id = "{}:directory-path:{}:{}".format(
+                    record.relpath, match.start(), match.group(0)
+                )
+                directory_findings.append(
+                    Finding(
+                        finding_id=_finding_id(raw_id),
+                        relpath=record.relpath,
+                        line=0,
+                        column=match.start() + 1,
+                        matched=match.group(0),
+                        category="directory-name",
+                        risk=risk,
+                        evidence="directory path contains confirmed source term: {}".format(
+                            match.group(0)
+                        ),
+                        sha256=record.state_sha256,
+                    )
+                )
 
     for record in files:
         path_is_p2_scope = path_is_p2(record.relpath)
@@ -181,4 +206,11 @@ def scan_project(project_root: Path, source_terms: Sequence[str]) -> AuditResult
                         )
                     )
 
-    return AuditResult(detect_project(project_root), list(terms), findings, files)
+    return AuditResult(
+        detect_project(project_root),
+        list(terms),
+        findings,
+        files,
+        directories,
+        directory_findings,
+    )

@@ -37,6 +37,16 @@ class CliEndToEndTests(unittest.TestCase):
             self.assertTrue((run / "audit.json").is_file())
             self.assertTrue((run / "audit.md").is_file())
             audit = json.loads((run / "audit.json").read_text(encoding="utf-8"))
+            self.assertTrue(audit["directories"])
+            self.assertTrue(audit["directory_findings"])
+            self.assertEqual(
+                set(audit["directories"][0]),
+                {"relpath", "mode", "state_sha256", "is_empty"},
+            )
+            self.assertTrue(all(
+                item["category"] == "directory-name"
+                for item in audit["directory_findings"]
+            ))
             finding = next(item for item in audit["findings"] if item["relpath"] == "messages/en.json" and item["risk"] == "P3")
             decisions = self.write_json(base / "decisions.json", {
                 "brand_mode": "placeholder", "brand_profile": {}, "actions": [{

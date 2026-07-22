@@ -13,6 +13,61 @@ from destarter_lib.scanner import scan_project
 
 
 class ScannerReportTests(unittest.TestCase):
+    def test_source_named_empty_directory_has_one_separate_directory_finding(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "public" / "starter").mkdir(parents=True)
+
+            audit = scan_project(root, ["starter"])
+
+            self.assertEqual([record.relpath for record in audit.directories], ["public", "public/starter"])
+            self.assertEqual(len(audit.findings), 0)
+            self.assertEqual(len(audit.directory_findings), 1)
+            finding = audit.directory_findings[0]
+            directory = next(record for record in audit.directories if record.relpath == "public/starter")
+            self.assertEqual(finding.relpath, "public/starter")
+            self.assertEqual(finding.line, 0)
+            self.assertEqual(finding.category, "directory-name")
+            self.assertEqual(finding.sha256, directory.state_sha256)
+
+    def test_non_empty_source_named_directory_is_found_separately_from_child_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            child = root / "public" / "starter-assets" / "starter-child.txt"
+            child.parent.mkdir(parents=True)
+            child.write_text("neutral child", encoding="utf-8")
+
+            audit = scan_project(root, ["starter"])
+
+            self.assertIn("public", [record.relpath for record in audit.directories])
+            self.assertEqual(
+                [finding.relpath for finding in audit.directory_findings],
+                ["public/starter-assets"],
+            )
+            self.assertEqual(
+                [finding.relpath for finding in audit.findings],
+                ["public/starter-assets/starter-child.txt"] * 2,
+            )
+            self.assertEqual(len(audit.findings), 2)
+            self.assertEqual(len(audit.directory_findings), 1)
+
+    def test_reports_directory_inventory_and_findings_separately(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "public" / "starter").mkdir(parents=True)
+            audit = scan_project(root, ["starter"])
+            run_dir = root / "run"
+
+            write_audit_reports(audit, run_dir)
+
+            payload = json.loads((run_dir / "audit.json").read_text(encoding="utf-8"))
+            rendered = (run_dir / "audit.md").read_text(encoding="utf-8")
+            self.assertEqual(payload["findings"], [])
+            self.assertEqual(len(payload["directories"]), 2)
+            self.assertEqual(len(payload["directory_findings"]), 1)
+            self.assertIn("## Directory residue", rendered)
+            self.assertIn("public/starter", rendered)
+
     def test_context_changes_risk_for_same_term(self) -> None:
         with TemporaryDirectory() as tmp:
             root = copy_fixture("nextjs-starter", Path(tmp))
