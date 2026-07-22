@@ -261,6 +261,7 @@ def create_preview(
 
     findings = {item.finding_id: item for item in audit.findings}
     changed = set()
+    action_preimage_hashes: Dict[str, str] = {}
     actions_by_path: Dict[str, List[Tuple[object, object]]] = {}
     for action in decisions.actions:
         if action.action != "replace":
@@ -287,8 +288,46 @@ def create_preview(
             if index < 0 or index >= len(lines) or lines[index][start:end] != finding.matched:
                 raise ValueError("finding no longer matches preview source: {}".format(finding.finding_id))
             lines[index] = lines[index][:start] + (action.replacement or "") + lines[index][end:]
-        safe_write_text(path, "".join(lines), stat.S_IMODE(path.stat().st_mode))
+        rendered_text = "".join(lines)
+        action_preimage_hashes[relpath] = sha256(
+            rendered_text.encode("utf-8")
+        ).hexdigest()
+        safe_write_text(path, rendered_text, stat.S_IMODE(path.stat().st_mode))
         changed.add(relpath)
+
+    semantic_metadata = []
+    edits_by_path = {}
+    for edit in decisions.text_edits:
+        edits_by_path.setdefault(edit.path, []).append(edit)
+    for relpath, edits in sorted(edits_by_path.items()):
+        path = preview_root / _safe_relpath(relpath)
+        text = read_text(path)
+        if text is None:
+            raise ValueError("semantic edit is not safely editable text: {}".format(relpath))
+        before_hash = sha256(text.encode("utf-8")).hexdigest()
+        expected_preimage = action_preimage_hashes.get(
+            relpath, edits[0].expected_sha256
+        )
+        if before_hash != expected_preimage:
+            raise ValueError("semantic edit preview preimage changed: {}".format(relpath))
+        lines = text.splitlines(keepends=True)
+        for edit in sorted(
+            edits,
+            key=lambda item: (item.start_line, item.end_line),
+            reverse=True,
+        ):
+            lines[edit.start_line - 1:edit.end_line] = edit.replacement.splitlines(keepends=True)
+        safe_write_text(path, "".join(lines), stat.S_IMODE(path.stat().st_mode))
+        after_hash = sha256_file(path)
+        changed.add(relpath)
+        semantic_metadata.extend({
+            "path": edit.path,
+            "start_line": edit.start_line,
+            "end_line": edit.end_line,
+            "reason": edit.reason,
+            "before_sha256": before_hash,
+            "after_sha256": after_hash,
+        } for edit in edits)
 
     delete_tree_hashes = {relpath: _tree_hash(root, relpath) for relpath in deleted}
     rename_tree_hashes = {
@@ -373,6 +412,10 @@ def create_preview(
                 "locations": locations,
             })
     safe_write_text(run / "placeholders.json", json.dumps(placeholders, indent=2, sort_keys=True) + "\n")
+    safe_write_text(
+        run / "semantic-edits.json",
+        json.dumps({"edits": semantic_metadata}, indent=2, sort_keys=True) + "\n",
+    )
 
     preview_tree_hash = _snapshot_hash(_safe_file_records(preview_root, {_OWNER_FILE}))
     preview_state_hash = _state_hash(preview_root, {_OWNER_FILE})
@@ -384,11 +427,25 @@ def create_preview(
              "migration_plan": action.migration_plan, "rollback_plan": action.rollback_plan}
             for action in decisions.actions
         ], key=lambda item: item["finding_id"]),
+        "text_edits": sorted([
+            {
+                "path": edit.path,
+                "expected_sha256": edit.expected_sha256,
+                "start_line": edit.start_line,
+                "end_line": edit.end_line,
+                "replacement": edit.replacement,
+                "reason": edit.reason,
+            }
+            for edit in decisions.text_edits
+        ], key=lambda item: (item["path"], item["start_line"], item["end_line"])),
         "delete_paths": deleted, "rename_paths": renames,
     })
     artifact_hashes = {
         name: sha256_file(run / name)
-        for name in ("preview.diff", "binary-changes.json", "placeholders.json")
+        for name in (
+            "preview.diff", "binary-changes.json", "placeholders.json",
+            "semantic-edits.json",
+        )
     }
     core = {
         "run_id": sha256(str(run).encode("utf-8")).hexdigest()[:16],
@@ -427,6 +484,6 @@ def create_preview(
         "# De-starter Preview", "", "- Brand mode: `{}`".format(decisions.brand_mode),
         "- Changed files: `{}`".format(len(preview_hashes)), "- Deleted paths: `{}`".format(len(deleted)),
         "- Renamed paths: `{}`".format(len(renames)), "- Approval token: `{}`".format(manifest.approval_token), "",
-        "Review `audit.md`, `preview.diff`, `binary-changes.json`, and `placeholders.json` before approval.", "",
+        "Review `audit.md`, `preview.diff`, `binary-changes.json`, `placeholders.json`, and `semantic-edits.json` before approval.", "",
     ]))
     return manifest

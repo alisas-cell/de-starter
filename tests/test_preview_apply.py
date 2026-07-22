@@ -19,6 +19,218 @@ from destarter_lib.apply import ApplyError, apply_preview
 
 
 class PreviewApplyTests(unittest.TestCase):
+    def test_preview_applies_semantic_edit_only_to_external_copy(self) -> None:
+        root, run, audit = self.semantic_fixture()
+        original = (root / "app/page.tsx").read_bytes()
+        decisions = self.semantic_decisions(
+            root,
+            audit,
+            replacement=(
+                "export default function Page() {\n"
+                "  return <main>Neutral</main>;\n"
+                "}\n"
+            ),
+        )
+        manifest = create_preview(root, run, audit, decisions)
+        self.assertEqual((root / "app/page.tsx").read_bytes(), original)
+        self.assertIn(
+            "Neutral",
+            (Path(manifest.preview_root) / "app/page.tsx").read_text(),
+        )
+        metadata = json.loads((run / "semantic-edits.json").read_text())
+        record = metadata["edits"][0]
+        self.assertEqual(record["path"], "app/page.tsx")
+        self.assertEqual(set(record), {
+            "path", "start_line", "end_line", "reason",
+            "before_sha256", "after_sha256",
+        })
+        self.assertEqual(
+            record["before_sha256"],
+            next(
+                item.sha256 for item in audit.files
+                if item.relpath == "app/page.tsx"
+            ),
+        )
+        self.assertEqual(
+            record["after_sha256"],
+            manifest.preview_hashes["app/page.tsx"],
+        )
+        self.assertNotIn("Neutral", json.dumps(metadata))
+
+    def test_semantic_edit_token_binds_reason_range_and_replacement(self) -> None:
+        root, run, audit = self.semantic_fixture()
+        whole_replacement = (
+            "export default function Page() {\n"
+            "  return <main>Neutral</main>;\n"
+            "}\n"
+        )
+        first = create_preview(
+            root,
+            run,
+            audit,
+            self.semantic_decisions(root, audit, whole_replacement),
+        )
+        changed_reason = create_preview(
+            root,
+            run,
+            audit,
+            self.semantic_decisions(
+                root,
+                audit,
+                whole_replacement,
+                reason="Use approved neutral presentation",
+            ),
+        )
+        changed_replacement = create_preview(
+            root,
+            run,
+            audit,
+            self.semantic_decisions(
+                root,
+                audit,
+                whole_replacement.replace("Neutral", "Generic"),
+            ),
+        )
+        changed_range = create_preview(
+            root,
+            run,
+            audit,
+            self.semantic_decisions(
+                root,
+                audit,
+                "  return <main>Neutral</main>;\n",
+                start_line=2,
+                end_line=2,
+            ),
+        )
+        self.assertNotEqual(first.approval_token, changed_reason.approval_token)
+        self.assertNotEqual(first.approval_token, changed_replacement.approval_token)
+        self.assertNotEqual(first.approval_token, changed_range.approval_token)
+
+    def test_apply_rejects_semantic_artifact_project_and_preview_drift(self) -> None:
+        root, run, audit = self.semantic_fixture()
+        manifest = self._semantic_preview(root, run, audit)
+        (run / "semantic-edits.json").write_text('{"edits": []}\n', encoding="utf-8")
+        with self.assertRaisesRegex(ApplyError, "artifact changed"):
+            apply_preview(root, run, manifest.approval_token)
+
+        root, run, audit = self.semantic_fixture()
+        manifest = self._semantic_preview(root, run, audit)
+        (root / "app/page.tsx").write_text("project drift\n", encoding="utf-8")
+        with self.assertRaisesRegex(ApplyError, "source changed"):
+            apply_preview(root, run, manifest.approval_token)
+
+        root, run, audit = self.semantic_fixture()
+        manifest = self._semantic_preview(root, run, audit)
+        (Path(manifest.preview_root) / "app/page.tsx").write_text(
+            "preview drift\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ApplyError, "preview changed"):
+            apply_preview(root, run, manifest.approval_token)
+
+    def test_apply_semantic_edit_preserves_mode_and_rolls_back_bytes(self) -> None:
+        root, run, audit = self.semantic_fixture(mode=0o744)
+        manifest = self._semantic_preview(root, run, audit)
+        result = apply_preview(root, run, manifest.approval_token)
+        target = root / "app/page.tsx"
+        self.assertIn("Neutral", target.read_text(encoding="utf-8"))
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o744)
+        self.assertIn("app/page.tsx", result.changed_paths)
+
+        root, run, audit = self.semantic_fixture(mode=0o744)
+        target = root / "app/page.tsx"
+        original = target.read_bytes()
+        manifest = self._semantic_preview(root, run, audit)
+        with patch(
+            "destarter_lib.apply._create_outputs",
+            side_effect=OSError("injected semantic failure"),
+        ):
+            with self.assertRaisesRegex(ApplyError, "rolled back"):
+                apply_preview(root, run, manifest.approval_token)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o744)
+
+    def test_semantic_replacement_is_absent_from_safe_metadata(self) -> None:
+        root, run, audit = self.semantic_fixture()
+        private = "private replacement value 7d8805"
+        create_preview(
+            root,
+            run,
+            audit,
+            self.semantic_decisions(root, audit, private + "\n"),
+        )
+        safe_metadata = "\n".join(
+            (run / name).read_text(encoding="utf-8")
+            for name in (
+                "semantic-edits.json",
+                "manifest.json",
+                "preview.md",
+                "binary-changes.json",
+                "placeholders.json",
+            )
+        )
+        self.assertNotIn(private, safe_metadata)
+
+    def test_semantic_edit_rechecks_preimage_after_finding_replacement(self) -> None:
+        root, run, _audit = self.semantic_fixture()
+        target = root / "app/page.tsx"
+        target.write_text(
+            "// Northstar\n"
+            "export default function Page() {\n"
+            "  return <main>Starter</main>;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        audit = scan_project(root, ["Northstar", "starter"])
+        finding = next(
+            item for item in audit.findings
+            if item.relpath == "app/page.tsx" and item.matched == "Northstar"
+        )
+        record = next(item for item in audit.files if item.relpath == "app/page.tsx")
+        decisions_path = root.parent / "semantic-decisions.json"
+        decisions_path.write_text(json.dumps({
+            "brand_mode": "placeholder",
+            "brand_profile": {},
+            "actions": [{
+                "finding_id": finding.finding_id,
+                "action": "replace",
+                "replacement": "Your Product",
+            }],
+            "text_edits": [{
+                "path": "app/page.tsx",
+                "expected_sha256": record.sha256,
+                "start_line": 2,
+                "end_line": 4,
+                "replacement": (
+                    "export default function Page() {\n"
+                    "  return <main>Neutral</main>;\n"
+                    "}\n"
+                ),
+                "reason": "Replace starter presentation",
+            }],
+        }), encoding="utf-8")
+        decisions = load_decisions(decisions_path, audit, root)
+        from destarter_lib import preview as module
+        real_write = module.safe_write_text
+
+        def tamper_after_finding(path, text, mode=None):
+            if mode is None:
+                real_write(path, text)
+            else:
+                real_write(path, text, mode)
+            if (
+                Path(path).as_posix().endswith("/preview/app/page.tsx")
+                and "// Your Product" in text
+            ):
+                Path(path).write_text(text + "tampered\n", encoding="utf-8")
+
+        with patch(
+            "destarter_lib.preview.safe_write_text",
+            side_effect=tamper_after_finding,
+        ):
+            with self.assertRaisesRegex(ValueError, "preview preimage changed"):
+                create_preview(root, run, audit, decisions)
+
     def test_apply_rejects_wrong_token_and_stale_source_or_preview(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -826,6 +1038,62 @@ class PreviewApplyTests(unittest.TestCase):
             "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
         }), encoding="utf-8")
         return path
+
+    def semantic_fixture(self, mode=None):
+        temp = TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        root = copy_fixture("nextjs-starter", base)
+        (root / "app/page.tsx").write_text(
+            "export default function Page() {\n"
+            "  return <main>Starter</main>;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        if mode is not None:
+            os.chmod(root / "app/page.tsx", mode)
+        return root, base / "run", scan_project(root, ["Northstar", "starter"])
+
+    def semantic_decisions(
+        self,
+        root: Path,
+        audit,
+        replacement: str,
+        *,
+        start_line: int = 1,
+        end_line: int = 3,
+        reason: str = "Replace starter presentation",
+    ):
+        record = next(item for item in audit.files if item.relpath == "app/page.tsx")
+        path = root.parent / "semantic-decisions.json"
+        path.write_text(json.dumps({
+            "brand_mode": "placeholder",
+            "brand_profile": {},
+            "actions": [],
+            "text_edits": [{
+                "path": "app/page.tsx",
+                "expected_sha256": record.sha256,
+                "start_line": start_line,
+                "end_line": end_line,
+                "replacement": replacement,
+                "reason": reason,
+            }],
+        }), encoding="utf-8")
+        return load_decisions(path, audit, root)
+
+    def _semantic_preview(self, root: Path, run: Path, audit):
+        return create_preview(
+            root,
+            run,
+            audit,
+            self.semantic_decisions(
+                root,
+                audit,
+                "export default function Page() {\n"
+                "  return <main>Neutral</main>;\n"
+                "}\n",
+            ),
+        )
 
     def _replacement_preview(self, root: Path, run: Path):
         audit = scan_project(root, ["Northstar"])

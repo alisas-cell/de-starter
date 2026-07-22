@@ -30,7 +30,10 @@ from .report import redact_evidence
 
 
 _BACKUP_OWNER = ".destarter-backup-owner.json"
-_ARTIFACTS = ("preview.diff", "binary-changes.json", "placeholders.json")
+_ARTIFACTS = (
+    "preview.diff", "binary-changes.json", "placeholders.json",
+    "semantic-edits.json",
+)
 _RESULT_ARTIFACTS = ("restore.json", "reverse.diff")
 _MANIFEST_KEYS = {
     "run_id", "project_root", "preview_root", "source_hashes", "preview_hashes",
