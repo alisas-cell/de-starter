@@ -15,6 +15,7 @@ sys.path.insert(0, str(SKILL_SCRIPTS))
 
 from destarter_lib.decisions import load_decisions
 from destarter_lib.models import DecisionSet
+from destarter_lib import apply as apply_module
 from destarter_lib import preview as preview_module
 from destarter_lib.preview import create_preview
 from destarter_lib.scanner import scan_project
@@ -1424,7 +1425,10 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertTrue((Path(manifest.preview_root) / "public").is_dir())
         self.assertEqual(manifest.cleanup_empty_dirs, ["public/starter"])
         state = manifest.cleanup_dir_states["public/starter"]
-        self.assertEqual(set(state), {"mode", "state_sha256", "is_empty"})
+        self.assertEqual(
+            set(state),
+            {"mode", "state_sha256", "is_empty", "device", "inode"},
+        )
         self.assertTrue(state["is_empty"])
 
         diff = (run / "preview.diff").read_text(encoding="utf-8")
@@ -2207,6 +2211,285 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertTrue((root / "public/starter").is_dir())
         self.assertFalse((run / "backup").exists())
 
+    def test_apply_strictly_loads_cleanup_manifest_fields_before_backup(self) -> None:
+        cases = (
+            ("unknown top-level key", lambda value: value.update({"extra": 1}), False),
+            ("missing cleanup paths", lambda value: value.pop("cleanup_empty_dirs"), False),
+            ("missing cleanup states", lambda value: value.pop("cleanup_dir_states"), False),
+            ("cleanup paths wrong type", lambda value: value.update({"cleanup_empty_dirs": {}}), False),
+            ("cleanup states wrong type", lambda value: value.update({"cleanup_dir_states": []}), False),
+            (
+                "partial cleanup state",
+                lambda value: value["cleanup_dir_states"]["public/starter"].pop("is_empty"),
+                False,
+            ),
+            (
+                "unknown cleanup state key",
+                lambda value: value["cleanup_dir_states"]["public/starter"].update({"extra": 1}),
+                False,
+            ),
+            (
+                "normalized duplicate cleanup path",
+                lambda value: value["cleanup_empty_dirs"].append("public/./starter"),
+                True,
+            ),
+            (
+                "cleanup state path mismatch",
+                lambda value: value["cleanup_dir_states"].update({
+                    "public/other": dict(value["cleanup_dir_states"]["public/starter"]),
+                }),
+                True,
+            ),
+        )
+        for label, mutate, retoken in cases:
+            with self.subTest(label=label):
+                root, run, audit = self.cleanup_fixture()
+                manifest = create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+                )
+                payload = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+                mutate(payload)
+                if retoken:
+                    self._retoken_manifest(payload)
+                (run / "manifest.json").write_text(
+                    json.dumps(payload), encoding="utf-8",
+                )
+                self._assert_apply_refused_without_changes(
+                    root,
+                    run,
+                    payload.get("approval_token", manifest.approval_token),
+                    "invalid preview manifest|invalid manifest",
+                )
+
+    def test_apply_rejects_cleanup_token_tampering_before_backup(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        payload = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+        payload["cleanup_dir_states"]["public/starter"]["mode"] ^= 0o001
+        (run / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        self._assert_apply_refused_without_changes(
+            root, run, manifest.approval_token, "approval token.*tampered",
+        )
+
+    def test_apply_rejects_cleanup_operation_shape_tampering_before_backup(self) -> None:
+        cases = ("overlapping cleanup roots", "cleanup under source", "destination overlap")
+        for label in cases:
+            with self.subTest(label=label):
+                child = "demo/starter.txt" if label == "destination overlap" else ""
+                root, run, audit = self.cleanup_fixture(child=child)
+                if label == "destination overlap":
+                    audit = scan_project(root, ["starter", "demo"])
+                    decisions = self.cleanup_decisions(
+                        root,
+                        audit,
+                        cleanup=["public/starter"],
+                        rename_paths={"public/starter/demo": "public/product"},
+                    )
+                else:
+                    decisions = self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    )
+                create_preview(root, run, audit, decisions)
+                payload = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+                state = dict(payload["cleanup_dir_states"]["public/starter"])
+                if label == "overlapping cleanup roots":
+                    payload["cleanup_empty_dirs"].append("public")
+                    payload["cleanup_empty_dirs"].sort()
+                    payload["cleanup_dir_states"]["public"] = state
+                elif label == "cleanup under source":
+                    payload["deleted_paths"] = ["public"]
+                    payload["delete_tree_hashes"] = {
+                        "public": preview_module._tree_hash(root, "public"),
+                    }
+                else:
+                    payload["renamed_paths"]["public/starter/demo"] = (
+                        "public/starter/output"
+                    )
+                    payload["rename_tree_hashes"]["public/starter/demo"][
+                        "destination"
+                    ] = "public/starter/output"
+                self._retoken_manifest(payload)
+                (run / "manifest.json").write_text(
+                    json.dumps(payload), encoding="utf-8",
+                )
+                self._assert_apply_refused_without_changes(
+                    root, run, payload["approval_token"], "invalid manifest.*overlap|invalid manifest cleanup",
+                )
+
+    def test_apply_revalidates_cleanup_source_state_before_backup(self) -> None:
+        def change_mode(root, _run):
+            (root / "public/starter").chmod(0o711)
+
+        def add_ordinary(root, _run):
+            (root / "public/starter/new.txt").write_text("foreign\n", encoding="utf-8")
+
+        def add_ignored(root, _run):
+            (root / "public/starter/.git").mkdir()
+
+        def add_secret(root, _run):
+            (root / "public/starter/.env").write_text("SECRET=x\n", encoding="utf-8")
+
+        def replace_with_file(root, _run):
+            shutil.rmtree(root / "public/starter")
+            (root / "public/starter").write_text("foreign\n", encoding="utf-8")
+
+        cases = (
+            ("mode", change_mode),
+            ("ordinary child", add_ordinary),
+            ("ignored child", add_ignored),
+            ("secret child", add_secret),
+            ("changed to file", replace_with_file),
+        )
+        for label, mutate in cases:
+            with self.subTest(label=label):
+                root, run, audit = self.cleanup_fixture()
+                manifest = create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+                )
+                mutate(root, run)
+                self._assert_apply_refused_without_changes(
+                    root, run, manifest.approval_token, "cleanup|source changed",
+                )
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_apply_rejects_cleanup_source_symlink_replacement_before_backup(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        displaced = root.parent / "displaced-starter"
+        (root / "public/starter").rename(displaced)
+        (root / "public/starter").symlink_to(displaced, target_is_directory=True)
+
+        with self.assertRaisesRegex(ApplyError, "symlink|cleanup|source changed"):
+            apply_preview(root, run, manifest.approval_token)
+        self.assertFalse((run / "backup").exists())
+        self.assertFalse((run / "restore.json").exists())
+        self.assertFalse((run / "reverse.diff").exists())
+        self.assertTrue((root / "public/starter").is_symlink())
+        self.assertTrue(displaced.is_dir())
+
+    def test_apply_rejects_cleanup_inode_swap_during_preflight(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_iter = apply_module.iter_project_directories
+        displaced = root.parent / "displaced-starter"
+        swapped = []
+
+        def replace_after_pin(value):
+            if not swapped:
+                directory = root / "public/starter"
+                mode = stat.S_IMODE(directory.stat().st_mode)
+                directory.rename(displaced)
+                directory.mkdir(mode=mode)
+                swapped.append(True)
+            return original_iter(value)
+
+        with patch(
+            "destarter_lib.apply.iter_project_directories",
+            side_effect=replace_after_pin,
+        ):
+            with self.assertRaisesRegex(ApplyError, "cleanup.*changed"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(swapped)
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertTrue(displaced.is_dir())
+        self.assertFalse((run / "backup").exists())
+
+    def test_apply_rejects_cleanup_ancestor_swap_during_preflight(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        original_iter = apply_module.iter_project_directories
+        displaced = root.parent / "displaced-public"
+        swapped = []
+
+        def replace_ancestor_after_pin(value):
+            if not swapped:
+                public = root / "public"
+                public_mode = stat.S_IMODE(public.stat().st_mode)
+                cleanup_mode = stat.S_IMODE((public / "starter").stat().st_mode)
+                public.rename(displaced)
+                public.mkdir(mode=public_mode)
+                (public / "starter").mkdir(mode=cleanup_mode)
+                swapped.append(True)
+            return original_iter(value)
+
+        with patch(
+            "destarter_lib.apply.iter_project_directories",
+            side_effect=replace_ancestor_after_pin,
+        ):
+            with self.assertRaisesRegex(ApplyError, "cleanup.*changed"):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(swapped)
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertTrue((displaced / "starter").is_dir())
+        self.assertFalse((run / "backup").exists())
+
+    def test_apply_rejects_same_state_new_cleanup_inode_after_preview(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        directory = root / "public/starter"
+        original_mode = stat.S_IMODE(directory.stat().st_mode)
+        displaced = root.parent / "displaced-starter"
+        directory.rename(displaced)
+        directory.mkdir(mode=original_mode)
+
+        self._assert_apply_refused_without_changes(
+            root, run, manifest.approval_token, "cleanup.*identity.*changed",
+        )
+        self.assertTrue(directory.is_dir())
+        self.assertTrue(displaced.is_dir())
+
+    def test_apply_revalidates_cleanup_preview_root_identity_before_backup(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        preview_root = Path(manifest.preview_root)
+        replacement = run / "same-content-different-preview-root"
+        shutil.copytree(preview_root, replacement)
+        shutil.rmtree(preview_root)
+        replacement.rename(preview_root)
+
+        self._assert_apply_refused_without_changes(
+            root, run, manifest.approval_token, "preview root identity",
+        )
+
     def test_preview_refuses_delete_or_rename_that_contains_secret_files(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -2419,6 +2702,28 @@ class PreviewApplyTests(unittest.TestCase):
         path = root.parent / "cleanup-decisions.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         return load_decisions(path, audit, root)
+
+    def _retoken_manifest(self, payload) -> None:
+        payload["approval_token"] = preview_module._token({
+            key: value
+            for key, value in payload.items()
+            if key != "approval_token"
+        })
+
+    def _assert_apply_refused_without_changes(
+        self,
+        root: Path,
+        run: Path,
+        approval_token: str,
+        message: str,
+    ) -> None:
+        before = preview_module._state_hash(root)
+        with self.assertRaisesRegex(ApplyError, message):
+            apply_preview(root, run, approval_token)
+        self.assertEqual(preview_module._state_hash(root), before)
+        self.assertFalse((run / "backup").exists())
+        self.assertFalse((run / "restore.json").exists())
+        self.assertFalse((run / "reverse.diff").exists())
 
     def _decisions(self, base: Path) -> Path:
         path = base / "decisions.json"

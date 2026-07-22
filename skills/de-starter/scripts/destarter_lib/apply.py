@@ -10,8 +10,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
-from .files import sha256_file
-from .models import ApplyResult, PreviewManifest
+from .files import DirectoryInventoryError, iter_project_directories, sha256_file
+from .models import ApplyResult, DirectoryRecord, PreviewManifest
 from .preview import (
     _OWNER_FILE,
     _contains,
@@ -265,7 +265,9 @@ def _cleanup_states(
         relpath = _rel(path, "cleanup_dir_states")
         if (
             not isinstance(state, dict)
-            or set(state) != {"mode", "state_sha256", "is_empty"}
+            or set(state) != {
+                "mode", "state_sha256", "is_empty", "device", "inode",
+            }
         ):
             _fail("invalid manifest cleanup_dir_states")
         mode = state["mode"]
@@ -279,12 +281,20 @@ def _cleanup_states(
         empty = state["is_empty"]
         if not isinstance(empty, bool):
             _fail("invalid manifest cleanup_dir_states is_empty")
+        identity = {}
+        for name in ("device", "inode"):
+            item = state[name]
+            if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+                _fail("invalid manifest cleanup_dir_states {}".format(name))
+            identity[name] = item
         result[relpath] = {
             "mode": mode,
             "state_sha256": _digest(
                 state["state_sha256"], "cleanup_dir_states state_sha256"
             ),
             "is_empty": empty,
+            "device": identity["device"],
+            "inode": identity["inode"],
         }
     if set(result) != cleanup or len(result) != len(value):
         _fail("invalid manifest cleanup_dir_states")
@@ -411,6 +421,180 @@ def _validate_operation_shapes(manifest: PreviewManifest) -> None:
     for relpath in manifest.changed_paths:
         if any(_under(deleted, relpath) for deleted in manifest.deleted_paths):
             _fail("invalid manifest changed path under delete")
+    cleanup = list(manifest.cleanup_empty_dirs)
+    if any(
+        _under(first, second) or _under(second, first)
+        for index, first in enumerate(cleanup)
+        for second in cleanup[index + 1:]
+    ):
+        _fail("invalid manifest overlapping cleanup directories")
+    if any(
+        _under(source, cleanup_path)
+        for source in sources
+        for cleanup_path in cleanup
+    ):
+        _fail("invalid manifest cleanup directory overlaps source operation")
+    if any(
+        _under(destination, cleanup_path) or _under(cleanup_path, destination)
+        for destination in destinations
+        for cleanup_path in cleanup
+    ):
+        _fail("invalid manifest cleanup directory overlaps rename destination")
+
+
+def _open_cleanup_directory(
+    root_fd: int, relpath: str,
+) -> Tuple[int, int, str, Identity]:
+    """Pin the exact no-follow cleanup directory and its parent."""
+    parts = _safe_relpath(relpath).parts
+    parent_fd = os.dup(root_fd)
+    directory_fd = -1
+    try:
+        for index, part in enumerate(parts):
+            before = os.stat(
+                part, dir_fd=parent_fd, follow_symlinks=False,
+            )
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+                _fail("cleanup directory is not a real directory: {}".format(relpath))
+            child = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            opened = os.fstat(child)
+            after = os.stat(
+                part, dir_fd=parent_fd, follow_symlinks=False,
+            )
+            identity = _identity_from_stat(opened)
+            if (
+                _identity_from_stat(before) != identity
+                or _identity_from_stat(after) != identity
+            ):
+                os.close(child)
+                _fail("cleanup directory changed while being pinned: {}".format(relpath))
+            if index == len(parts) - 1:
+                directory_fd = child
+                return parent_fd, directory_fd, part, identity
+            os.close(parent_fd)
+            parent_fd = child
+    except OSError as error:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        os.close(parent_fd)
+        _fail("cleanup directory is missing or unsafe: {}: {}".format(relpath, error))
+    except Exception:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        os.close(parent_fd)
+        raise
+    raise AssertionError("unreachable")
+
+
+def _verify_cleanup_directories(
+    root: Path, preview: Path, manifest: PreviewManifest,
+) -> None:
+    """Revalidate token-bound cleanup directories without creating backup state."""
+    if not manifest.cleanup_empty_dirs:
+        return
+    root_fd = _open_directory(root)
+    try:
+        preview_fd = _open_directory(preview)
+    except Exception:
+        os.close(root_fd)
+        raise
+    pinned: List[Tuple[str, int, int, str, Identity]] = []
+    try:
+        root_identity = _identity_from_stat(os.fstat(root_fd))
+        if _identity_path(root) != root_identity:
+            _fail("project root identity changed during cleanup preflight")
+        preview_identity = _identity_from_stat(os.fstat(preview_fd))
+        if manifest.preview_root_identity is not None and preview_identity != (
+            manifest.preview_root_identity["device"],
+            manifest.preview_root_identity["inode"],
+        ):
+            _fail("preview root identity changed during cleanup preflight")
+
+        for relpath in manifest.cleanup_empty_dirs:
+            parent_fd, directory_fd, name, identity = _open_cleanup_directory(
+                root_fd, relpath,
+            )
+            pinned.append((relpath, parent_fd, directory_fd, name, identity))
+            expected = manifest.cleanup_dir_states[relpath]
+            if identity != (expected["device"], expected["inode"]):
+                _fail("cleanup directory identity changed after preview: {}".format(relpath))
+            info = os.fstat(directory_fd)
+            if stat.S_IMODE(info.st_mode) != expected["mode"]:
+                _fail("cleanup directory mode changed after preview: {}".format(relpath))
+            try:
+                opened_state = _state_from_open(directory_fd)
+            except (OSError, ApplyError) as error:
+                _fail("cleanup directory changed during preflight: {}: {}".format(relpath, error))
+            if opened_state.kind != "dir" or opened_state.forbidden:
+                _fail("cleanup directory contains excluded or unsafe content: {}".format(relpath))
+            if (not os.listdir(directory_fd)) != expected["is_empty"]:
+                _fail("cleanup directory emptiness changed after preview: {}".format(relpath))
+
+            try:
+                preview_parent_fd, preview_name = _open_parent(
+                    preview_fd, relpath,
+                )
+            except (OSError, ValueError) as error:
+                _fail(
+                    "cleanup preview parent is missing or unsafe: {}: {}".format(
+                        relpath, error,
+                    )
+                )
+            try:
+                if not _absent(preview_parent_fd, preview_name):
+                    _fail("approved cleanup directory still exists in preview: {}".format(relpath))
+            finally:
+                os.close(preview_parent_fd)
+
+        try:
+            records = {
+                item.relpath: item for item in iter_project_directories(root)
+            }
+        except DirectoryInventoryError as error:
+            _fail("cleanup directory inventory changed during preflight: {}".format(error))
+        for relpath, parent_fd, directory_fd, name, identity in pinned:
+            expected = manifest.cleanup_dir_states[relpath]
+            record = records.get(relpath)
+            expected_record = DirectoryRecord(
+                relpath,
+                expected["mode"],
+                expected["state_sha256"],
+                expected["is_empty"],
+            )
+            if record != expected_record:
+                _fail("cleanup directory state changed after preview: {}".format(relpath))
+            if (
+                _identity_from_stat(os.fstat(directory_fd)) != identity
+                or _identity_at(parent_fd, name) != identity
+            ):
+                _fail("cleanup directory identity changed during preflight: {}".format(relpath))
+            current_parent_fd, current_fd, _current_name, current_identity = (
+                _open_cleanup_directory(root_fd, relpath)
+            )
+            try:
+                if current_identity != identity:
+                    _fail(
+                        "cleanup directory path changed during preflight: {}".format(
+                            relpath
+                        )
+                    )
+            finally:
+                os.close(current_fd)
+                os.close(current_parent_fd)
+        if _identity_path(root) != root_identity:
+            _fail("project root identity changed during cleanup preflight")
+        if _identity_path(preview) != preview_identity:
+            _fail("preview root identity changed during cleanup preflight")
+    finally:
+        for _relpath, parent_fd, directory_fd, _name, _identity in reversed(pinned):
+            os.close(directory_fd)
+            os.close(parent_fd)
+        os.close(preview_fd)
+        os.close(root_fd)
 
 
 def _verify_approval(
@@ -451,12 +635,13 @@ def _verify_approval(
         _fail("preview ownership marker is invalid: {}".format(error))
     if owner != {"project_root": str(root)}:
         _fail("preview is not owned by this project")
+    _validate_operation_shapes(manifest)
+    _verify_cleanup_directories(root, preview, manifest)
     try:
         _ensure_no_symlinks(root)
         _ensure_no_symlinks(preview)
     except ValueError as error:
         _fail(str(error))
-    _validate_operation_shapes(manifest)
     for relpath in list(manifest.deleted_paths) + list(manifest.renamed_paths):
         if _contains_secret_or_ignored(root, relpath):
             _fail(
@@ -1925,8 +2110,6 @@ def apply_preview(
         os.close(root_probe)
 
     manifest, raw = _load_manifest(run)
-    if manifest.cleanup_empty_dirs:
-        _fail("empty-directory cleanup apply is not implemented")
     preview = _verify_approval(
         root, run, manifest, raw, approval_token
     )
@@ -1960,6 +2143,11 @@ def apply_preview(
         ):
             _fail("text replacement preflight failed: {}".format(relpath))
     reverse = _reverse_diff(root, preview, manifest)
+    if manifest.cleanup_empty_dirs:
+        _fail(
+            "empty-directory cleanup transaction is not implemented; "
+            "approval preflight completed without creating a backup"
+        )
 
     transaction = _prepare_transaction(
         root, run, preview, manifest, raw

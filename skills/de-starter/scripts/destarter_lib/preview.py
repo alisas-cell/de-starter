@@ -305,13 +305,7 @@ def _cleanup_directory_states(
         safe = _safe_relpath(relpath).as_posix()
         if safe != relpath:
             raise ValueError("cleanup directory path is not canonical: {}".format(relpath))
-        path = root / safe
-        try:
-            info = path.lstat()
-        except OSError as error:
-            raise ValueError("cleanup directory is missing: {}".format(relpath)) from error
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise ValueError("cleanup directory is not a real directory: {}".format(relpath))
+        identity_before = _stable_source_directory_identity(root, relpath)
         if _contains_secret_or_ignored(root, relpath):
             raise ValueError(
                 "cleanup directory contains excluded secret file or ignored metadata: {}".format(relpath)
@@ -320,12 +314,84 @@ def _cleanup_directory_states(
         actual = current.get(relpath)
         if expected is None or actual is None or actual != expected:
             raise ValueError("cleanup directory changed after audit: {}".format(relpath))
+        identity_after = _stable_source_directory_identity(root, relpath)
+        if identity_after != identity_before:
+            raise ValueError(
+                "cleanup directory changed while its identity was captured: {}".format(
+                    relpath
+                )
+            )
         states[relpath] = {
             "mode": expected.mode,
             "state_sha256": expected.state_sha256,
             "is_empty": expected.is_empty,
+            "device": identity_before[0],
+            "inode": identity_before[1],
         }
     return states
+
+
+def _stable_source_directory_identity(root: Path, relpath: str) -> Tuple[int, int]:
+    """Resolve one source directory through no-follow descriptors twice."""
+    expected_root = _preview_root_identity_at(root)
+
+    def resolve_once() -> Tuple[int, int]:
+        descriptor = os.open(
+            str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        try:
+            root_info = os.fstat(descriptor)
+            if (root_info.st_dev, root_info.st_ino) != expected_root:
+                raise ValueError("cleanup source root changed while being pinned")
+            for part in _safe_relpath(relpath).parts:
+                before = os.stat(
+                    part, dir_fd=descriptor, follow_symlinks=False,
+                )
+                if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+                    raise ValueError(
+                        "cleanup directory is not a real directory: {}".format(
+                            relpath
+                        )
+                    )
+                child = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=descriptor,
+                )
+                opened = os.fstat(child)
+                after = os.stat(
+                    part, dir_fd=descriptor, follow_symlinks=False,
+                )
+                if (
+                    (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                    or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+                ):
+                    os.close(child)
+                    raise ValueError(
+                        "cleanup directory changed while being pinned: {}".format(
+                            relpath
+                        )
+                    )
+                os.close(descriptor)
+                descriptor = child
+            final = os.fstat(descriptor)
+            return final.st_dev, final.st_ino
+        except OSError as error:
+            raise ValueError(
+                "cleanup directory is missing or unsafe: {}".format(relpath)
+            ) from error
+        finally:
+            os.close(descriptor)
+
+    first = resolve_once()
+    second = resolve_once()
+    if first != second or _preview_root_identity_at(root) != expected_root:
+        raise ValueError(
+            "cleanup directory changed while its identity was captured: {}".format(
+                relpath
+            )
+        )
+    return second
 
 
 def _directory_identity_at(
