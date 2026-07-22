@@ -30,6 +30,7 @@ from .decisions import PLACEHOLDER_PROFILE
 
 _OWNER_FILE = ".destarter-preview-owner.json"
 _CLEANUP_STAGING_OWNER = ".destarter-preview-cleanup-owner.json"
+_RECOVERY_FILE = ".destarter-preview-recovery-required.json"
 _PROTECTED_STEMS = {"license", "copying", "notice"}
 _SECRET_VALUE_RE = re.compile(r"(?i)(secret|token|api[_-]?key|password|^sk_)")
 
@@ -128,49 +129,125 @@ def _assert_source_unchanged(
         raise ValueError("source changed during preview")
 
 
+def _same_node_and_mode(first: os.stat_result, second: os.stat_result) -> bool:
+    return (
+        first.st_dev == second.st_dev
+        and first.st_ino == second.st_ino
+        and stat.S_IFMT(first.st_mode) == stat.S_IFMT(second.st_mode)
+        and stat.S_IMODE(first.st_mode) == stat.S_IMODE(second.st_mode)
+    )
+
+
+def _safe_state_directory(path: Path, label: str) -> os.stat_result:
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise ValueError("preview state {} is unavailable".format(label)) from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("preview state contains unsafe {} object".format(label))
+    return info
+
+
+def _hash_verified_state_file(
+    parent_fd: int,
+    name: str,
+    path: Path,
+    expected: os.stat_result,
+) -> str:
+    """Hash one regular file only while its descriptor and pathname remain stable."""
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as error:
+        raise ValueError("preview state file cannot be opened safely") from error
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or not _same_node_and_mode(expected, opened):
+            raise ValueError("preview state file changed before hashing")
+        digest = sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        after_read = os.fstat(descriptor)
+        if not _same_node_and_mode(expected, after_read):
+            raise ValueError("preview state file changed during hashing")
+        try:
+            current = path.lstat()
+        except OSError as error:
+            raise ValueError("preview state file is unavailable after hashing") from error
+        if not stat.S_ISREG(current.st_mode) or not _same_node_and_mode(expected, current):
+            raise ValueError("preview state file changed during hashing")
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
 def _state_hash(root: Path, excluded_names: Iterable[str] = ()) -> str:
     """Bind every safe file, directory (including empty ones), and permission mode."""
     excluded = set(excluded_names)
-    try:
-        root_info = root.lstat()
-    except OSError as error:
-        raise ValueError("preview state root is unavailable") from error
-    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
-        raise ValueError("preview state contains unsafe root object")
+    root_before = _safe_state_directory(root, "root")
     entries = []
     for directory, dirs, files in os.walk(str(root), followlinks=False):
         current = Path(directory)
+        current_info = _safe_state_directory(current, "directory")
         try:
-            current_info = current.lstat()
+            current_fd = os.open(
+                str(current),
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
         except OSError as error:
-            raise ValueError("preview state directory is unavailable") from error
-        if stat.S_ISLNK(current_info.st_mode) or not stat.S_ISDIR(current_info.st_mode):
-            raise ValueError("preview state contains unsafe directory object")
-        dirs[:] = [name for name in dirs if not _is_ignored_name(name) and not _is_secret_name(name)]
-        rel_dir = current.relative_to(root).as_posix()
-        entries.append({"kind": "dir", "path": rel_dir, "mode": stat.S_IMODE(current_info.st_mode)})
-        for name in sorted(dirs):
-            path = current / name
-            try:
-                info = path.lstat()
-            except OSError as error:
-                raise ValueError("preview state directory entry is unavailable") from error
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise ValueError("preview state contains symlink or unsupported directory entry")
-        for name in sorted(files):
-            if name in excluded or _is_ignored_name(name) or _is_secret_name(name):
-                continue
-            path = current / name
-            try:
-                info = path.lstat()
-            except OSError as error:
-                raise ValueError("preview state file entry is unavailable") from error
-            if stat.S_ISLNK(info.st_mode):
-                raise ValueError("preview state contains symlink file entry")
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("preview state contains unsupported file entry")
-            entries.append({"kind": "file", "path": path.relative_to(root).as_posix(),
-                            "mode": stat.S_IMODE(info.st_mode), "sha256": sha256_file(path)})
+            raise ValueError("preview state directory cannot be opened safely") from error
+        try:
+            opened_current = os.fstat(current_fd)
+            if not _same_node_and_mode(current_info, opened_current):
+                raise ValueError("preview state directory changed while being pinned")
+            dirs[:] = [
+                name for name in dirs
+                if not _is_ignored_name(name) and not _is_secret_name(name)
+            ]
+            rel_dir = current.relative_to(root).as_posix()
+            entries.append({
+                "kind": "dir", "path": rel_dir,
+                "mode": stat.S_IMODE(current_info.st_mode),
+            })
+            for name in sorted(dirs):
+                path = current / name
+                try:
+                    info = path.lstat()
+                except OSError as error:
+                    raise ValueError("preview state directory entry is unavailable") from error
+                if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                    raise ValueError("preview state contains symlink or unsupported directory entry")
+            for name in sorted(files):
+                if name in excluded or _is_ignored_name(name) or _is_secret_name(name):
+                    continue
+                path = current / name
+                try:
+                    info = path.lstat()
+                except OSError as error:
+                    raise ValueError("preview state file entry is unavailable") from error
+                if stat.S_ISLNK(info.st_mode):
+                    raise ValueError("preview state contains symlink file entry")
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("preview state contains unsupported file entry")
+                entries.append({
+                    "kind": "file",
+                    "path": path.relative_to(root).as_posix(),
+                    "mode": stat.S_IMODE(info.st_mode),
+                    "sha256": _hash_verified_state_file(
+                        current_fd, name, path, info,
+                    ),
+                })
+        finally:
+            os.close(current_fd)
+    root_after = _safe_state_directory(root, "root")
+    if not _same_node_and_mode(root_before, root_after):
+        raise ValueError("preview state root changed during snapshot")
     return _token({"state": sorted(entries, key=lambda item: (str(item["path"]), str(item["kind"])))})
 
 
@@ -264,6 +341,54 @@ def _directory_identity_at(
     return info.st_dev, info.st_ino
 
 
+def _preview_root_identity_at(preview_root: Path) -> Tuple[int, int]:
+    try:
+        info = preview_root.lstat()
+    except OSError as error:
+        raise ValueError("preview root changed or is unavailable") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("preview root changed or is not a real directory")
+    return info.st_dev, info.st_ino
+
+
+def _open_pinned_preview_root(preview_root: Path) -> Tuple[int, Tuple[int, int]]:
+    """Pin the copied preview root and prove its pathname still names that inode."""
+    before = _preview_root_identity_at(preview_root)
+    try:
+        descriptor = os.open(
+            str(preview_root),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise ValueError("cannot pin preview root") from error
+    try:
+        opened = os.fstat(descriptor)
+        identity = opened.st_dev, opened.st_ino
+        if not stat.S_ISDIR(opened.st_mode) or before != identity:
+            raise ValueError("preview root changed while being pinned")
+        if _preview_root_identity_at(preview_root) != identity:
+            raise ValueError("preview root changed while being pinned")
+        return descriptor, identity
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _assert_pinned_preview_root(
+    preview_root: Path,
+    preview_root_fd: int,
+    expected_identity: Tuple[int, int],
+) -> None:
+    """Fail rather than operate on a replacement preview directory."""
+    opened = os.fstat(preview_root_fd)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or (opened.st_dev, opened.st_ino) != expected_identity
+        or _preview_root_identity_at(preview_root) != expected_identity
+    ):
+        raise ValueError("preview root changed during preview")
+
+
 def _open_pinned_preview_directory(
     parent_fd: int, name: str, relpath: str,
 ) -> Tuple[int, Tuple[int, int]]:
@@ -292,15 +417,12 @@ def _open_pinned_preview_directory(
 
 
 def _open_pinned_preview_cleanup_dir(
-    preview_root: Path, relpath: str,
+    preview_root_fd: int, relpath: str,
 ) -> Tuple[int, int, int, Tuple[str, ...], Tuple[Tuple[int, int], ...]]:
     """Open the cleanup root and all components without following links."""
     parts = _safe_relpath(relpath).parts
     try:
-        root_fd = os.open(
-            str(preview_root),
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        )
+        root_fd = os.dup(preview_root_fd)
     except OSError as error:
         raise ValueError("cannot pin preview root for cleanup") from error
     parent_fd = root_fd
@@ -390,6 +512,44 @@ def _write_cleanup_staging_owner(
             view = view[written:]
     except OSError as error:
         raise ValueError("cannot write cleanup staging owner") from error
+    finally:
+        os.close(descriptor)
+
+
+def _mark_preview_recovery_required(
+    preview_root_fd: int,
+    expected_identity: Tuple[int, int],
+    project_root: Path,
+) -> None:
+    """Atomically retain a failed cleanup scene instead of allowing a retry to erase it."""
+    opened = os.fstat(preview_root_fd)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or (opened.st_dev, opened.st_ino) != expected_identity
+    ):
+        raise ValueError("cannot mark changed preview root as recovery required")
+    payload = json.dumps(
+        {"project_root": str(project_root), "recovery_required": True},
+        sort_keys=True,
+    ).encode("utf-8") + b"\n"
+    try:
+        descriptor = os.open(
+            _RECOVERY_FILE,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=preview_root_fd,
+        )
+    except FileExistsError:
+        return
+    except OSError as error:
+        raise ValueError("cannot mark preview recovery required") from error
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+    except OSError as error:
+        raise ValueError("cannot write preview recovery marker") from error
     finally:
         os.close(descriptor)
 
@@ -565,15 +725,18 @@ def _verify_isolated_preview_cleanup_dir(
 
 
 def _remove_preview_cleanup_dir(
-    preview_root: Path,
+    preview_root_fd: int,
+    preview_root_identity: Tuple[int, int],
+    project_root: Path,
     staging_fd: int,
     relpath: str,
     state: Mapping[str, object],
 ) -> Dict[str, object]:
     """Isolate and prove one approved empty directory without deleting it."""
     root_fd, parent_fd, terminal_fd, parts, identities = _open_pinned_preview_cleanup_dir(
-        preview_root, relpath,
+        preview_root_fd, relpath,
     )
+    isolated = False
     try:
         info = os.fstat(terminal_fd)
         if stat.S_IMODE(info.st_mode) != state["mode"]:
@@ -586,6 +749,7 @@ def _remove_preview_cleanup_dir(
         staging_name = _isolate_preview_cleanup_dir(
             root_fd, parent_fd, parts, identities, staging_fd, relpath,
         )
+        isolated = True
         _verify_isolated_preview_cleanup_dir(
             staging_fd, staging_name, identities[-1], state, relpath,
         )
@@ -595,6 +759,10 @@ def _remove_preview_cleanup_dir(
             )
         _assert_pinned_preview_cleanup_chain(root_fd, parts[:-1], identities[:-1])
     except Exception:
+        if isolated:
+            _mark_preview_recovery_required(
+                preview_root_fd, preview_root_identity, project_root,
+            )
         raise
     finally:
         os.close(terminal_fd)
@@ -615,6 +783,14 @@ def _remove_owned_preview(preview_root: Path, project_root: Path) -> None:
         return
     if preview_root.is_symlink() or not preview_root.is_dir():
         raise ValueError("existing preview root is not a safe directory")
+    try:
+        os.lstat(str(preview_root / _RECOVERY_FILE))
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise ValueError("cannot inspect preview recovery status") from error
+    else:
+        raise ValueError("preview recovery required; refusing to remove failed preview")
     owner = preview_root / _OWNER_FILE
     try:
         payload = json.loads(owner.read_text(encoding="utf-8"))
@@ -668,6 +844,7 @@ def create_preview(
     run_dir: Path,
     audit: AuditResult,
     decisions: DecisionSet,
+    _pinned_preview_root: object = None,
 ) -> PreviewManifest:
     """Materialize decisions in a guarded external copy and emit review artifacts."""
     root = project_root.resolve()
@@ -708,12 +885,28 @@ def create_preview(
                 raise ValueError("text replacement falls under deleted path")
 
     preview_root = run / "preview"
-    _remove_owned_preview(preview_root, root)
-    run.mkdir(parents=True, exist_ok=True)
-    if run.is_symlink() or not run.is_dir():
-        raise ValueError("run directory must be a real directory")
-    shutil.copytree(root, preview_root, ignore=_ignore)
-    safe_write_text(preview_root / _OWNER_FILE, json.dumps({"project_root": str(root)}, sort_keys=True) + "\n")
+    if _pinned_preview_root is None:
+        _remove_owned_preview(preview_root, root)
+        run.mkdir(parents=True, exist_ok=True)
+        if run.is_symlink() or not run.is_dir():
+            raise ValueError("run directory must be a real directory")
+        shutil.copytree(root, preview_root, ignore=_ignore)
+        safe_write_text(preview_root / _OWNER_FILE, json.dumps({"project_root": str(root)}, sort_keys=True) + "\n")
+        preview_root_fd, preview_root_identity = _open_pinned_preview_root(preview_root)
+        try:
+            return create_preview(
+                project_root,
+                run_dir,
+                audit,
+                decisions,
+                _pinned_preview_root=(preview_root_fd, preview_root_identity),
+            )
+        finally:
+            os.close(preview_root_fd)
+    preview_root_fd, preview_root_identity = _pinned_preview_root
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
 
     findings = {item.finding_id: item for item in audit.findings}
     changed = set()
@@ -817,11 +1010,17 @@ def create_preview(
         else:
             raise ValueError("invalid delete path: {}".format(relpath))
 
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
     cleanup_staging_fd = _open_preview_cleanup_staging(run, root) if cleanup else -1
     try:
+        _assert_pinned_preview_root(
+            preview_root, preview_root_fd, preview_root_identity,
+        )
         cleanup_operations = [
             _remove_preview_cleanup_dir(
-                preview_root, cleanup_staging_fd, relpath,
+                preview_root_fd, preview_root_identity, root, cleanup_staging_fd, relpath,
                 cleanup_dir_states[relpath],
             )
             for relpath in cleanup
@@ -829,7 +1028,13 @@ def create_preview(
     finally:
         if cleanup_staging_fd >= 0:
             os.close(cleanup_staging_fd)
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
     _ensure_no_symlinks(preview_root)
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
     _assert_source_unchanged(
         root, source_records, source_tree_hash, source_state_hash,
     )
@@ -907,8 +1112,17 @@ def create_preview(
         json.dumps({"edits": semantic_metadata}, indent=2, sort_keys=True) + "\n",
     )
 
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
     preview_tree_hash = _snapshot_hash(_safe_file_records(preview_root, {_OWNER_FILE}))
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
     preview_state_hash = _state_hash(preview_root, {_OWNER_FILE})
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
     decision_hash = _token({
         "brand_mode": decisions.brand_mode,
         "brand_profile": decisions.brand_profile,
@@ -979,6 +1193,9 @@ def create_preview(
         "preview_tree_hash": preview_tree_hash, "source_state_hash": source_state_hash,
         "preview_state_hash": preview_state_hash, "artifact_hashes": artifact_hashes,
     })
+    _assert_pinned_preview_root(
+        preview_root, preview_root_fd, preview_root_identity,
+    )
     safe_write_text(run / "manifest.json", json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n")
 
     safe_write_text(run / "preview.md", "\n".join([

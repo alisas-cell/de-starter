@@ -1611,6 +1611,35 @@ class PreviewApplyTests(unittest.TestCase):
             for path in staging_dirs[0].iterdir()
         ))
 
+    def test_preview_retry_refuses_a_recovery_required_cleanup_failure(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        preview_cleanup = run / "preview/public/starter"
+        foreign_identity = []
+
+        def create_foreign_terminal(*_args, **_kwargs):
+            preview_cleanup.mkdir()
+            info = preview_cleanup.lstat()
+            foreign_identity.append((info.st_dev, info.st_ino))
+            raise ValueError("injected isolated cleanup validation failure")
+
+        decisions = self.cleanup_decisions(
+            root, audit, cleanup=["public/starter"],
+        )
+        with patch(
+            "destarter_lib.preview._verify_isolated_preview_cleanup_dir",
+            side_effect=create_foreign_terminal,
+        ):
+            with self.assertRaisesRegex(ValueError, "isolated cleanup"):
+                create_preview(root, run, audit, decisions)
+
+        initial = preview_cleanup.lstat()
+        self.assertEqual((initial.st_dev, initial.st_ino), foreign_identity[0])
+        with self.assertRaisesRegex(ValueError, "recovery required"):
+            create_preview(root, run, audit, decisions)
+        retried = preview_cleanup.lstat()
+        self.assertEqual((retried.st_dev, retried.st_ino), foreign_identity[0])
+        self.assertFalse((run / "manifest.json").exists())
+
     def test_preview_cleanup_never_overwrites_a_raced_staging_destination(self) -> None:
         root, run, audit = self.cleanup_fixture()
         original_absent = preview_module._entry_absent
@@ -1673,6 +1702,47 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertTrue((root / "public/starter").is_dir())
         self.assertFalse((run / "manifest.json").exists())
 
+    def test_preview_cleanup_uses_the_original_pinned_preview_root(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        preview_root = run / "preview"
+        preserved_root = run / "pinned-preview-recovery"
+        substitute_guard = "unknown substitute tree must remain untouched\n"
+        original_open_staging = preview_module._open_preview_cleanup_staging
+        swapped = []
+
+        def replace_preview_root_after_pin(*args, **kwargs):
+            staging_fd = original_open_staging(*args, **kwargs)
+            preview_root.rename(preserved_root)
+            shutil.copytree(root, preview_root)
+            (preview_root / "unknown-substitute.txt").write_text(
+                substitute_guard, encoding="utf-8",
+            )
+            swapped.append(True)
+            return staging_fd
+
+        with patch(
+            "destarter_lib.preview._open_preview_cleanup_staging",
+            side_effect=replace_preview_root_after_pin,
+        ):
+            with self.assertRaisesRegex(ValueError, "preview root changed"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(swapped)
+        self.assertFalse((run / "manifest.json").exists())
+        self.assertTrue((preserved_root / "public/starter").is_dir())
+        self.assertTrue((preview_root / "public/starter").is_dir())
+        self.assertEqual(
+            (preview_root / "unknown-substitute.txt").read_text(encoding="utf-8"),
+            substitute_guard,
+        )
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_preview_snapshot_refuses_a_symlink_inserted_after_cleanup_check(self) -> None:
         root, run, audit = self.cleanup_fixture()
@@ -1707,6 +1777,62 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertTrue(injected)
         self.assertFalse((run / "manifest.json").exists())
         self.assertEqual(source_guard.read_text(encoding="utf-8"), "source remains intact\n")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_preview_snapshot_refuses_file_replaced_by_symlink_before_fd_read(self) -> None:
+        root, run, _audit = self.cleanup_fixture()
+        victim = root / "snapshot-victim.txt"
+        victim.write_text("ordinary preview file\n", encoding="utf-8")
+        target = root.parent / "outside-snapshot-target.txt"
+        target.write_text("outside target must not be accepted\n", encoding="utf-8")
+        audit = scan_project(root, ["starter"])
+        preview_victim = run / "preview/snapshot-victim.txt"
+        original_state_hash = preview_module._state_hash
+        original_open = preview_module.os.open
+        active_state_roots = []
+        swapped = []
+
+        def track_state_hash(path, excluded_names=()):
+            active_state_roots.append(Path(path))
+            try:
+                return original_state_hash(path, excluded_names)
+            finally:
+                active_state_roots.pop()
+
+        def swap_before_fd_read(path, flags, *args, **kwargs):
+            if (
+                active_state_roots
+                and active_state_roots[-1].name == "preview"
+                and path == "snapshot-victim.txt"
+                and not swapped
+            ):
+                preview_victim.unlink()
+                preview_victim.symlink_to(target)
+                swapped.append(True)
+            return original_open(path, flags, *args, **kwargs)
+
+        with patch(
+            "destarter_lib.preview._state_hash",
+            side_effect=track_state_hash,
+        ), patch(
+            "destarter_lib.preview.os.open",
+            side_effect=swap_before_fd_read,
+        ):
+            with self.assertRaisesRegex(ValueError, "state.*file|symlink"):
+                create_preview(
+                    root,
+                    run,
+                    audit,
+                    self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    ),
+                )
+
+        self.assertTrue(swapped)
+        self.assertFalse((run / "manifest.json").exists())
+        self.assertEqual(target.read_text(encoding="utf-8"), "outside target must not be accepted\n")
+        self.assertTrue(victim.is_file())
+        self.assertFalse(victim.is_symlink())
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_preview_cleanup_refuses_an_ancestor_swap_after_final_check(self) -> None:
@@ -1764,7 +1890,11 @@ class PreviewApplyTests(unittest.TestCase):
         def move_source_after_cleanup(path):
             result = original_check(path)
             checks.append(path)
-            if len(checks) == 2 and not mutated:
+            if (
+                not mutated
+                and (run / "preview").is_dir()
+                and not (run / "preview/public/starter").exists()
+            ):
                 source_object.rename(root / "source-object-moved.txt")
                 mutated.append(True)
             return result
