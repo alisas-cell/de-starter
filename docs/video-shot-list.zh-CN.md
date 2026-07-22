@@ -4,7 +4,7 @@
 
 | 镜头 ID | 来源 | 隐私级别 | 画面重点 | 旁白建议 | 文件名 |
 | --- | --- | --- | --- | --- | --- |
-| `audit-overview` | `docs/assets/video/sources/01-audit-overview.html` | 公开安全；仅含通用标签与汇总计数 | 350 个文件完成清点；522 条发现按 P0–P3 分类；新增、删除、变化均为 0；第一道审批门仍在等待明确确认 | “先做只读清点，再讨论要改什么。审计把受保护内容、高风险标识、用户选择项和展示残留分开；在第一道审批门通过前，源项目保持逐字节不变。” | `docs/assets/video/01-audit-overview.png` |
+| `audit-overview` | `docs/assets/video/sources/01-audit-overview.html` | 公开安全；仅含通用标签与汇总计数 | 350 个文件完成清点；523 条发现按 P0–P3 分类；新增、删除、变化均为 0；第一道审批门仍在等待明确确认 | “先做只读清点，再讨论要改什么。审计把受保护内容、高风险标识、用户选择项和展示残留分开；在第一道审批门通过前，源项目保持逐字节不变。” | `docs/assets/video/01-audit-overview.png` |
 
 ## 剪辑说明
 
