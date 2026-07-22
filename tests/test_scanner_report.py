@@ -202,6 +202,33 @@ class ScannerReportTests(unittest.TestCase):
             self.assertEqual(finding.risk.value, "P2")
             self.assertIn("binary-or-path inventory", finding.evidence)
 
+    def test_concatenated_sample_media_filename_is_inventoried_as_p2(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = copy_fixture("nextjs-starter", Path(tmp))
+            asset = root / "public" / "samplegallery.png"
+            asset.parent.mkdir(parents=True, exist_ok=True)
+            asset.write_bytes(b"\x89PNG\r\n\x1a\n\x00synthetic")
+            audit = scan_project(root, [])
+            finding = next(
+                item for item in audit.findings
+                if item.relpath == "public/samplegallery.png"
+            )
+            self.assertEqual(finding.risk.value, "P2")
+            self.assertIn("binary-or-path inventory", finding.evidence)
+
+    def test_sample_prefix_does_not_classify_source_file_as_p2(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = copy_fixture("nextjs-starter", Path(tmp))
+            source = root / "src" / "sampler.ts"
+            source.parent.mkdir(exist_ok=True)
+            source.write_text("const marker = 'neutral';\n", encoding="utf-8")
+            audit = scan_project(root, ["marker"])
+            finding = next(
+                item for item in audit.findings
+                if item.relpath == "src/sampler.ts" and item.matched == "marker"
+            )
+            self.assertEqual(finding.risk.value, "P3")
+
     def test_brand_in_binary_filename_is_reported(self) -> None:
         with TemporaryDirectory() as tmp:
             root = copy_fixture("nextjs-starter", Path(tmp))

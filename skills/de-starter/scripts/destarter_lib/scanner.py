@@ -27,9 +27,19 @@ P2_PARTS = {
     "demo", "demos", "example", "examples", "sample", "samples", "testimonials",
     "fixtures",
 }
+P2_MEDIA_EXTENSIONS = {
+    ".avif", ".gif", ".jpeg", ".jpg", ".mp4", ".mov", ".png", ".svg",
+    ".webm", ".webp",
+}
 
 
 def _path_is_p2(relpath: str) -> bool:
+    path = Path(relpath)
+    if (
+        path.suffix.casefold() in P2_MEDIA_EXTENSIONS
+        and path.stem.casefold().startswith("sample")
+    ):
+        return True
     for part in Path(relpath).parts:
         words = re.split(r"[^a-z0-9]+", part.casefold())
         if any(word in P2_PARTS for word in words):
