@@ -31,6 +31,13 @@ from .decisions import PLACEHOLDER_PROFILE
 _OWNER_FILE = ".destarter-preview-owner.json"
 _CLEANUP_STAGING_OWNER = ".destarter-preview-cleanup-owner.json"
 _RECOVERY_FILE = ".destarter-preview-recovery-required.json"
+_ARTIFACT_NAMES = (
+    "preview.diff",
+    "binary-changes.json",
+    "placeholders.json",
+    "semantic-edits.json",
+    "preview.md",
+)
 _PROTECTED_STEMS = {"license", "copying", "notice"}
 _SECRET_VALUE_RE = re.compile(r"(?i)(secret|token|api[_-]?key|password|^sk_)")
 
@@ -1224,12 +1231,25 @@ def create_preview(
         "cleanup_empty_dirs": cleanup,
         "cleanup_dir_states": cleanup_dir_states,
     })
+    safe_write_text(run / "preview.md", "\n".join([
+        "# De-starter Preview", "",
+        "- Brand mode: `{}`".format(decisions.brand_mode),
+        "- Changed files: `{}`".format(len(preview_hashes)),
+        "- Deleted paths: `{}`".format(len(deleted)),
+        "- Renamed paths: `{}`".format(len(renames)),
+        "- Cleaned empty directories: `{}`".format(len(cleanup)),
+        "",
+        "- P1 migration-protected semantic edits: `{}`".format(sum(
+            edit.p1_migration_protected for edit in decisions.text_edits
+        )), "",
+        "Review `audit.md`, `preview.diff`, `binary-changes.json`, "
+        "`placeholders.json`, and `semantic-edits.json` before approval.",
+        "The exact approval token is emitted separately by the CLI and stored "
+        "in `manifest.json`.", "",
+    ]))
     artifact_hashes = {
         name: sha256_file(run / name)
-        for name in (
-            "preview.diff", "binary-changes.json", "placeholders.json",
-            "semantic-edits.json",
-        )
+        for name in _ARTIFACT_NAMES
     }
     _assert_source_unchanged(
         root, source_records, source_tree_hash, source_state_hash,
@@ -1280,15 +1300,4 @@ def create_preview(
         preview_root, preview_root_fd, preview_root_identity,
     )
 
-    safe_write_text(run / "preview.md", "\n".join([
-        "# De-starter Preview", "", "- Brand mode: `{}`".format(decisions.brand_mode),
-        "- Changed files: `{}`".format(len(preview_hashes)), "- Deleted paths: `{}`".format(len(deleted)),
-        "- Renamed paths: `{}`".format(len(renames)),
-        "- Cleaned empty directories: `{}`".format(len(cleanup)),
-        "- Approval token: `{}`".format(manifest.approval_token), "",
-        "- P1 migration-protected semantic edits: `{}`".format(sum(
-            edit.p1_migration_protected for edit in decisions.text_edits
-        )), "",
-        "Review `audit.md`, `preview.diff`, `binary-changes.json`, `placeholders.json`, and `semantic-edits.json` before approval.", "",
-    ]))
     return manifest

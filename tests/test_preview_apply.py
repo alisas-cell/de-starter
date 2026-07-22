@@ -1830,6 +1830,8 @@ class PreviewApplyTests(unittest.TestCase):
         legacy.pop("preview_root_identity")
         legacy.pop("cleanup_empty_dirs")
         legacy.pop("cleanup_dir_states")
+        legacy["artifact_hashes"] = dict(legacy["artifact_hashes"])
+        legacy["artifact_hashes"].pop("preview.md")
         manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
         with self.assertRaisesRegex(ApplyError, "approval token is tampered"):
             apply_preview(root, run, manifest.approval_token)
@@ -2790,9 +2792,16 @@ class PreviewApplyTests(unittest.TestCase):
             ),
         )
 
+        original_atomic = apply_module._atomic_rename_no_replace
+
+        def fail_cleanup_only(source, destination, **kwargs):
+            if source == "starter":
+                raise PermissionError("injected cleanup permission failure")
+            return original_atomic(source, destination, **kwargs)
+
         with patch(
             "destarter_lib.apply._atomic_rename_no_replace",
-            side_effect=PermissionError("injected cleanup permission failure"),
+            side_effect=fail_cleanup_only,
         ):
             with self.assertRaisesRegex(ApplyError, "changes rolled back"):
                 apply_preview(root, run, manifest.approval_token)
@@ -2946,6 +2955,194 @@ class PreviewApplyTests(unittest.TestCase):
         self.assertTrue((root / "public/starter").is_dir())
         self.assertFalse((run / "restore.json").exists())
         self.assertFalse((run / "reverse.diff").exists())
+
+    def test_delete_child_post_backup_move_read_failure_rolls_back_committed_original(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+        original_state_at = apply_module._state_at
+        failed = []
+
+        def fail_first_ordinary_backup_read(parent_fd, name):
+            if not failed and name.startswith("0000-"):
+                failed.append(name)
+                raise OSError("injected delete-child post-move read failure")
+            return original_state_at(parent_fd, name)
+
+        with patch(
+            "destarter_lib.apply._state_at",
+            side_effect=fail_first_ordinary_backup_read,
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back") as caught:
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(failed)
+        self.assertNotIn("before mutation", str(caught.exception))
+        self.assertEqual(
+            (root / "public/starter/sample-starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+        backups = list((run / "backup/original").iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(encoding="utf-8"), "sample\n")
+
+    def test_rename_child_post_backup_move_read_failure_rolls_back_committed_tree(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="demo/starter.txt")
+        audit = scan_project(root, ["starter", "demo"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                rename_paths={"public/starter/demo": "public/product"},
+            ),
+        )
+        original_state_at = apply_module._state_at
+        failed = []
+
+        def fail_first_ordinary_backup_read(parent_fd, name):
+            if not failed and name.startswith("0000-"):
+                failed.append(name)
+                raise OSError("injected rename-child post-move read failure")
+            return original_state_at(parent_fd, name)
+
+        with patch(
+            "destarter_lib.apply._state_at",
+            side_effect=fail_first_ordinary_backup_read,
+        ):
+            with self.assertRaisesRegex(ApplyError, "changes rolled back") as caught:
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(failed)
+        self.assertNotIn("before mutation", str(caught.exception))
+        self.assertEqual(
+            (root / "public/starter/demo/starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+        self.assertFalse((root / "public/product").exists())
+        backups = list((run / "backup/original").iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(
+            (backups[0] / "starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+
+    def test_ordinary_backup_atomic_move_never_overwrites_a_raced_destination(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        audit = scan_project(root, ["starter"])
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(
+                root,
+                audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+        original_atomic = apply_module._atomic_rename_no_replace
+        foreign = []
+
+        def occupy_backup_after_precheck(source, destination, **kwargs):
+            if source == "sample-starter.txt" and not foreign:
+                descriptor = os.open(
+                    destination,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=kwargs["dst_dir_fd"],
+                )
+                try:
+                    os.write(descriptor, b"foreign backup target\n")
+                    info = os.fstat(descriptor)
+                    foreign.append((destination, info.st_dev, info.st_ino))
+                finally:
+                    os.close(descriptor)
+            return original_atomic(source, destination, **kwargs)
+
+        with patch(
+            "destarter_lib.apply._atomic_rename_no_replace",
+            side_effect=occupy_backup_after_precheck,
+        ):
+            with self.assertRaises(ApplyError):
+                apply_preview(root, run, manifest.approval_token)
+
+        self.assertTrue(foreign)
+        name, device, inode = foreign[0]
+        target = run / "backup/original" / name
+        info = target.stat()
+        self.assertEqual((info.st_dev, info.st_ino), (device, inode))
+        self.assertEqual(target.read_bytes(), b"foreign backup target\n")
+        self.assertEqual(
+            (root / "public/starter/sample-starter.txt").read_text(encoding="utf-8"),
+            "sample\n",
+        )
+
+    def test_cleanup_preview_summary_is_token_free_hashed_and_tamper_evident(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        payload = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+        summary = run / "preview.md"
+        original = summary.read_text(encoding="utf-8")
+
+        self.assertIn("preview.md", payload["artifact_hashes"])
+        self.assertEqual(payload["artifact_hashes"]["preview.md"], sha256(original.encode("utf-8")).hexdigest())
+        self.assertNotIn(manifest.approval_token, original)
+        self.assertNotIn("Approval token", original)
+        summary.write_text(
+            original.replace(
+                "Cleaned empty directories: `1`",
+                "Cleaned empty directories: `99`",
+            ),
+            encoding="utf-8",
+        )
+
+        self._assert_apply_refused_without_changes(
+            root,
+            run,
+            manifest.approval_token,
+            "preview artifact changed",
+        )
+
+    def test_cleanup_manifest_cannot_downgrade_summary_to_legacy_artifact_set(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        payload = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+        payload["artifact_hashes"].pop("preview.md")
+        self._retoken_manifest(payload)
+        (run / "manifest.json").write_text(
+            json.dumps(payload), encoding="utf-8",
+        )
+
+        self._assert_apply_refused_without_changes(
+            root,
+            run,
+            payload["approval_token"],
+            "invalid manifest artifact_hashes",
+        )
 
     def test_apply_strictly_loads_cleanup_manifest_fields_before_backup(self) -> None:
         cases = (

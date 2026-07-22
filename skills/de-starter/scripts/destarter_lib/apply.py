@@ -31,10 +31,11 @@ from .report import redact_evidence
 
 
 _BACKUP_OWNER = ".destarter-backup-owner.json"
-_ARTIFACTS = (
+_LEGACY_ARTIFACTS = (
     "preview.diff", "binary-changes.json", "placeholders.json",
     "semantic-edits.json",
 )
+_ARTIFACTS = _LEGACY_ARTIFACTS + ("preview.md",)
 _RESULT_ARTIFACTS = ("restore.json", "reverse.diff")
 _MANIFEST_KEYS = {
     "run_id", "project_root", "preview_root", "source_hashes", "preview_hashes",
@@ -71,6 +72,7 @@ class Original:
     name: str
     expected: ObjectState
     backup_name: str
+    move_committed: bool = False
     moved: Optional[ObjectState] = None
 
 
@@ -368,7 +370,10 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
     ):
         _digest(payload.get(name), name)
     artifacts = _hashes(payload.get("artifact_hashes"), "artifact_hashes")
-    if set(artifacts) != set(_ARTIFACTS):
+    expected_artifacts = (
+        set(_ARTIFACTS) if has_cleanup_fields else set(_LEGACY_ARTIFACTS)
+    )
+    if set(artifacts) != expected_artifacts:
         _fail("invalid manifest artifact_hashes")
     if set(changed) != set(preview_hashes) or set(deleted) != set(delete_hashes):
         _fail("invalid manifest operation hashes")
@@ -1570,14 +1575,17 @@ def _move_originals(transaction: Transaction) -> None:
     for original in transaction.originals:
         if not _absent(transaction.original_fd, original.backup_name):
             _fail("unique backup destination was unexpectedly occupied")
-        os.rename(
+        _atomic_rename_no_replace(
             original.name,
             original.backup_name,
             src_dir_fd=original.parent_fd,
             dst_dir_fd=transaction.original_fd,
         )
+        # The source namespace mutation is committed when the atomic syscall
+        # returns. Record the already-verified state before fallible reads.
+        original.move_committed = True
+        original.moved = original.expected
         moved = _state_at(transaction.original_fd, original.backup_name)
-        original.moved = moved
         if moved != original.expected:
             _fail(
                 "source changed at atomic move boundary: "
@@ -1780,7 +1788,7 @@ def _verify_backups(transaction: Transaction) -> None:
     ):
         _fail("external backup scaffold identity or state changed")
     for original in transaction.originals:
-        if original.moved is None:
+        if not original.move_committed or original.moved is None:
             _fail("original was not moved to external backup")
         actual = _state_at(transaction.original_fd, original.backup_name)
         if actual != original.moved or actual != original.expected:
@@ -2318,7 +2326,13 @@ def _rollback(transaction: Transaction) -> List[str]:
         if restore_error:
             errors.append(restore_error)
     for original in reversed(transaction.originals):
+        if not original.move_committed:
+            continue
         if original.moved is None:
+            errors.append(
+                "original move {} committed without an owned state; external "
+                "backup preserved for recovery".format(original.relpath)
+            )
             continue
         try:
             backup = _state_at(
@@ -2535,7 +2549,7 @@ def apply_preview(
                     )
         except Exception as error:
             mutated = any(
-                item.moved is not None for item in transaction.originals
+                item.move_committed for item in transaction.originals
             ) or any(
                 item.created is not None for item in transaction.outputs
             ) or any(
