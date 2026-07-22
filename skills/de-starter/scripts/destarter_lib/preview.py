@@ -11,7 +11,14 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Tuple
 
-from .files import IGNORED_DIRS, is_secret_name, read_text, safe_write_text, sha256_file
+from .files import (
+    IGNORED_DIRS,
+    is_secret_name,
+    iter_project_directories,
+    read_text,
+    safe_write_text,
+    sha256_file,
+)
 from .models import AuditResult, DecisionSet, PreviewManifest
 from .report import redact_evidence
 from .decisions import PLACEHOLDER_PROFILE
@@ -156,6 +163,79 @@ def _contains_secret_or_ignored(root: Path, relpath: str) -> bool:
     return False
 
 
+def _cleanup_directory_states(
+    root: Path, audit: AuditResult, cleanup_paths: Iterable[str],
+) -> Dict[str, Dict[str, object]]:
+    """Bind only audited, current, safe cleanup directories to the preview."""
+    cleanup = sorted(cleanup_paths)
+    if len(cleanup) != len(set(cleanup)):
+        raise ValueError("cleanup empty directories contain duplicates")
+    audited = {item.relpath: item for item in audit.directories}
+    if len(audited) != len(audit.directories):
+        raise ValueError("audit contains duplicate directory records")
+    current = {item.relpath: item for item in iter_project_directories(root)}
+    states: Dict[str, Dict[str, object]] = {}
+    for relpath in cleanup:
+        safe = _safe_relpath(relpath).as_posix()
+        if safe != relpath:
+            raise ValueError("cleanup directory path is not canonical: {}".format(relpath))
+        path = root / safe
+        try:
+            info = path.lstat()
+        except OSError as error:
+            raise ValueError("cleanup directory is missing: {}".format(relpath)) from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError("cleanup directory is not a real directory: {}".format(relpath))
+        if _contains_secret_or_ignored(root, relpath):
+            raise ValueError(
+                "cleanup directory contains excluded secret file or ignored metadata: {}".format(relpath)
+            )
+        expected = audited.get(relpath)
+        actual = current.get(relpath)
+        if expected is None or actual is None or actual != expected:
+            raise ValueError("cleanup directory changed after audit: {}".format(relpath))
+        states[relpath] = {
+            "mode": expected.mode,
+            "state_sha256": expected.state_sha256,
+            "is_empty": expected.is_empty,
+        }
+    return states
+
+
+def _remove_preview_cleanup_dir(
+    preview_root: Path,
+    relpath: str,
+    state: Mapping[str, object],
+) -> Dict[str, object]:
+    """Remove one explicitly approved directory after proving it is empty."""
+    path = preview_root / _safe_relpath(relpath)
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise ValueError("cleanup preview directory is missing: {}".format(relpath)) from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("cleanup preview path is not a real directory: {}".format(relpath))
+    if stat.S_IMODE(info.st_mode) != state["mode"]:
+        raise ValueError("cleanup preview directory mode changed: {}".format(relpath))
+    try:
+        with os.scandir(path) as entries:
+            if next(entries, None) is not None:
+                raise ValueError("cleanup preview directory is not empty: {}".format(relpath))
+    except OSError as error:
+        raise ValueError("cannot inspect cleanup preview directory: {}".format(relpath)) from error
+    try:
+        path.rmdir()
+    except OSError as error:
+        raise ValueError("cannot remove approved empty directory: {}".format(relpath)) from error
+    return {
+        "operation": "cleanup-empty-dir",
+        "path": relpath,
+        "mode": state["mode"],
+        "source_state_sha256": state["state_sha256"],
+        "source_is_empty": state["is_empty"],
+    }
+
+
 def _remove_owned_preview(preview_root: Path, project_root: Path) -> None:
     if not preview_root.exists():
         return
@@ -227,9 +307,11 @@ def create_preview(
     _ensure_no_symlinks(root)
     deleted = sorted(set(decisions.delete_paths))
     renames = dict(sorted(decisions.rename_paths.items()))
-    operation_roots = deleted + list(renames) + list(renames.values())
+    cleanup = sorted(decisions.cleanup_empty_dirs)
+    operation_roots = deleted + list(renames) + list(renames.values()) + cleanup
     for relpath in operation_roots:
         _safe_relpath(relpath)
+    cleanup_dir_states = _cleanup_directory_states(root, audit, cleanup)
     for relpath in deleted + list(renames):
         if _contains_secret_or_ignored(root, relpath):
             raise ValueError("path contains excluded secret file or ignored metadata: {}".format(relpath))
@@ -361,6 +443,11 @@ def create_preview(
         else:
             raise ValueError("invalid delete path: {}".format(relpath))
 
+    cleanup_operations = [
+        _remove_preview_cleanup_dir(preview_root, relpath, cleanup_dir_states[relpath])
+        for relpath in cleanup
+    ]
+
     source_hashes = {}
     for relpath in sorted(changed):
         source_hashes[relpath] = sha256_file(root / _safe_relpath(relpath))
@@ -389,12 +476,19 @@ def create_preview(
         diff_lines.append("Binary/path rename: {} -> {} ({} -> {})\n".format(
             source, destination, detail["source_hash"], detail["preview_hash"]
         ))
+    for operation in cleanup_operations:
+        diff_lines.append(
+            "Empty directory cleanup: {} (mode {:04o}, source state sha256 {})\n".format(
+                operation["path"], operation["mode"], operation["source_state_sha256"],
+            )
+        )
     safe_write_text(run / "preview.diff", _redact_report_text("".join(diff_lines), decisions))
 
     binary_operations = _operation_records(root, deleted, "delete", renames)
     binary_operations.extend(_operation_records(root, renames, "rename", renames))
     for relpath in sorted(changed):
         binary_operations.append({"operation": "replace", "path": relpath, "destination": _preview_relpath(relpath, renames), "is_text": True})
+    binary_operations.extend(cleanup_operations)
     safe_write_text(run / "binary-changes.json", json.dumps({"operations": binary_operations}, indent=2, sort_keys=True) + "\n")
 
     placeholders = []
@@ -452,6 +546,7 @@ def create_preview(
             for edit in decisions.text_edits
         ], key=lambda item: (item["path"], item["start_line"], item["end_line"])),
         "delete_paths": deleted, "rename_paths": renames,
+        "cleanup_empty_dirs": cleanup,
     })
     artifact_hashes = {
         name: sha256_file(run / name)
@@ -467,6 +562,7 @@ def create_preview(
         "preview_hashes": dict(sorted(preview_hashes.items())),
         "delete_tree_hashes": delete_tree_hashes, "rename_tree_hashes": rename_tree_hashes,
         "changed_paths": sorted(preview_hashes), "deleted_paths": deleted, "renamed_paths": renames,
+        "cleanup_empty_dirs": cleanup, "cleanup_dir_states": cleanup_dir_states,
     }
     profile_hash = _token({"brand_profile": decisions.brand_profile})
     brand_result_hash = _token({
@@ -475,6 +571,8 @@ def create_preview(
         "preview_hashes": core["preview_hashes"],
         "delete_tree_hashes": core["delete_tree_hashes"],
         "rename_tree_hashes": core["rename_tree_hashes"],
+        "cleanup_empty_dirs": core["cleanup_empty_dirs"],
+        "cleanup_dir_states": core["cleanup_dir_states"],
     })
     token_payload = dict(core)
     token_payload.update({
@@ -496,7 +594,9 @@ def create_preview(
     safe_write_text(run / "preview.md", "\n".join([
         "# De-starter Preview", "", "- Brand mode: `{}`".format(decisions.brand_mode),
         "- Changed files: `{}`".format(len(preview_hashes)), "- Deleted paths: `{}`".format(len(deleted)),
-        "- Renamed paths: `{}`".format(len(renames)), "- Approval token: `{}`".format(manifest.approval_token), "",
+        "- Renamed paths: `{}`".format(len(renames)),
+        "- Cleaned empty directories: `{}`".format(len(cleanup)),
+        "- Approval token: `{}`".format(manifest.approval_token), "",
         "- P1 migration-protected semantic edits: `{}`".format(sum(
             edit.p1_migration_protected for edit in decisions.text_edits
         )), "",

@@ -42,6 +42,7 @@ _MANIFEST_KEYS = {
     "decision_hash", "source_tree_hash", "preview_tree_hash", "source_state_hash",
     "preview_state_hash", "artifact_hashes",
 }
+_CLEANUP_MANIFEST_KEYS = {"cleanup_empty_dirs", "cleanup_dir_states"}
 Identity = Tuple[int, int]
 
 
@@ -160,7 +161,11 @@ def _load_json(path: Path) -> Mapping[str, object]:
         _fail("invalid preview manifest: {}".format(error))
     if not isinstance(value, dict):
         _fail("invalid preview manifest")
-    if set(value) != _MANIFEST_KEYS:
+    keys = set(value)
+    if (
+        keys != _MANIFEST_KEYS
+        and keys != _MANIFEST_KEYS | _CLEANUP_MANIFEST_KEYS
+    ):
         _fail("invalid preview manifest keys")
     return value
 
@@ -243,6 +248,43 @@ def _rename_hashes(
     return result
 
 
+def _cleanup_states(
+    value: object, cleanup_paths: Iterable[str],
+) -> Dict[str, Dict[str, object]]:
+    if not isinstance(value, dict):
+        _fail("invalid manifest cleanup_dir_states")
+    cleanup = set(cleanup_paths)
+    result: Dict[str, Dict[str, object]] = {}
+    for path, state in value.items():
+        relpath = _rel(path, "cleanup_dir_states")
+        if (
+            not isinstance(state, dict)
+            or set(state) != {"mode", "state_sha256", "is_empty"}
+        ):
+            _fail("invalid manifest cleanup_dir_states")
+        mode = state["mode"]
+        if (
+            isinstance(mode, bool)
+            or not isinstance(mode, int)
+            or mode < 0
+            or mode > 0o7777
+        ):
+            _fail("invalid manifest cleanup_dir_states mode")
+        empty = state["is_empty"]
+        if not isinstance(empty, bool):
+            _fail("invalid manifest cleanup_dir_states is_empty")
+        result[relpath] = {
+            "mode": mode,
+            "state_sha256": _digest(
+                state["state_sha256"], "cleanup_dir_states state_sha256"
+            ),
+            "is_empty": empty,
+        }
+    if set(result) != cleanup or len(result) != len(value):
+        _fail("invalid manifest cleanup_dir_states")
+    return dict(sorted(result.items()))
+
+
 def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
     payload = _load_json(run / "manifest.json")
     run_id = _require_string(payload, "run_id")
@@ -259,6 +301,11 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
     renames = _renames(payload.get("renamed_paths"))
     rename_hashes = _rename_hashes(
         payload.get("rename_tree_hashes"), renames
+    )
+    has_cleanup_fields = _CLEANUP_MANIFEST_KEYS <= set(payload)
+    cleanup = _paths(payload.get("cleanup_empty_dirs", []), "cleanup_empty_dirs")
+    cleanup_states = _cleanup_states(
+        payload.get("cleanup_dir_states", {}), cleanup
     )
     if payload.get("brand_mode") not in {"real", "placeholder"}:
         _fail("invalid manifest brand_mode")
@@ -283,6 +330,8 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
         "changed_paths": changed,
         "deleted_paths": deleted,
         "renamed_paths": renames,
+        "cleanup_empty_dirs": cleanup,
+        "cleanup_dir_states": cleanup_states,
     }
     additive = {
         name: payload[name]
@@ -292,7 +341,11 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
             "preview_state_hash", "artifact_hashes",
         )
     }
-    if token != _token(dict(core, **additive)):
+    token_core = dict(core)
+    if not has_cleanup_fields:
+        token_core.pop("cleanup_empty_dirs")
+        token_core.pop("cleanup_dir_states")
+    if token != _token(dict(token_core, **additive)):
         _fail("manifest approval token is tampered or stale")
     return PreviewManifest(**core, approval_token=token), payload
 
@@ -1826,6 +1879,8 @@ def apply_preview(
         os.close(root_probe)
 
     manifest, raw = _load_manifest(run)
+    if manifest.cleanup_empty_dirs:
+        _fail("empty-directory cleanup apply is not implemented")
     preview = _verify_approval(
         root, run, manifest, raw, approval_token
     )

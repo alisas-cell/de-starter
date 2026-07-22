@@ -14,6 +14,7 @@ from tests.support import SKILL_SCRIPTS, copy_fixture
 sys.path.insert(0, str(SKILL_SCRIPTS))
 
 from destarter_lib.decisions import load_decisions
+from destarter_lib.models import DecisionSet
 from destarter_lib.preview import create_preview
 from destarter_lib.scanner import scan_project
 from destarter_lib.apply import ApplyError, apply_preview
@@ -1408,6 +1409,170 @@ class PreviewApplyTests(unittest.TestCase):
             )
             self.assertEqual(manifest.renamed_paths, {"app/demo": "app/showcase"})
 
+    def test_preview_removes_only_an_explicitly_approved_empty_directory(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertFalse((Path(manifest.preview_root) / "public/starter").exists())
+        self.assertTrue((Path(manifest.preview_root) / "public").is_dir())
+        self.assertEqual(manifest.cleanup_empty_dirs, ["public/starter"])
+        state = manifest.cleanup_dir_states["public/starter"]
+        self.assertEqual(set(state), {"mode", "state_sha256", "is_empty"})
+        self.assertTrue(state["is_empty"])
+
+        diff = (run / "preview.diff").read_text(encoding="utf-8")
+        changes = json.loads((run / "binary-changes.json").read_text(encoding="utf-8"))
+        report = (run / "preview.md").read_text(encoding="utf-8")
+        payload = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIn("Empty directory cleanup: public/starter", diff)
+        self.assertEqual(changes["operations"][-1]["operation"], "cleanup-empty-dir")
+        self.assertEqual(changes["operations"][-1]["path"], "public/starter")
+        self.assertIn("Cleaned empty directories: `1`", report)
+        self.assertEqual(payload["cleanup_empty_dirs"], ["public/starter"])
+        self.assertEqual(payload["cleanup_dir_states"], manifest.cleanup_dir_states)
+
+    def test_preview_removes_a_parent_made_empty_by_an_approved_delete(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="sample-starter.txt")
+        audit = scan_project(root, ["starter"])
+        decisions = self.cleanup_decisions(
+            root,
+            audit,
+            cleanup=["public/starter"],
+            delete_paths=["public/starter/sample-starter.txt"],
+        )
+
+        manifest = create_preview(root, run, audit, decisions)
+
+        self.assertTrue((root / "public/starter/sample-starter.txt").is_file())
+        self.assertFalse((Path(manifest.preview_root) / "public/starter").exists())
+        self.assertTrue((Path(manifest.preview_root) / "public").is_dir())
+        self.assertFalse(manifest.cleanup_dir_states["public/starter"]["is_empty"])
+
+    def test_preview_removes_a_parent_made_empty_by_an_approved_rename(self) -> None:
+        root, run, _audit = self.cleanup_fixture(child="demo/starter.txt")
+        audit = scan_project(root, ["starter", "demo"])
+        decisions = self.cleanup_decisions(
+            root,
+            audit,
+            cleanup=["public/starter"],
+            rename_paths={"public/starter/demo": "public/product"},
+        )
+
+        manifest = create_preview(root, run, audit, decisions)
+
+        self.assertTrue((root / "public/starter/demo/starter.txt").is_file())
+        self.assertTrue((Path(manifest.preview_root) / "public/product/starter.txt").is_file())
+        self.assertFalse((Path(manifest.preview_root) / "public/starter").exists())
+        self.assertTrue((Path(manifest.preview_root) / "public").is_dir())
+
+    def test_preview_refuses_cleanup_when_a_child_is_not_owned_or_safe(self) -> None:
+        cases = ("leftover.txt", "node_modules", ".env", "symlink", "file")
+        for case in cases:
+            with self.subTest(case=case):
+                root, run, audit = self.cleanup_fixture()
+                cleanup = root / "public/starter"
+                if case == "leftover.txt":
+                    (cleanup / case).write_text("leftover\n", encoding="utf-8")
+                elif case in {"node_modules", ".env"}:
+                    child = cleanup / case
+                    child.mkdir()
+                    (child / "child.txt").write_text("excluded\n", encoding="utf-8")
+                elif case == "symlink":
+                    target = root / "outside"
+                    target.mkdir()
+                    cleanup.rmdir()
+                    cleanup.symlink_to(target, target_is_directory=True)
+                else:
+                    cleanup.rmdir()
+                    cleanup.write_text("not a directory\n", encoding="utf-8")
+
+                if case in {"leftover.txt", "node_modules", ".env"}:
+                    audit = scan_project(root, ["starter"])
+                    decisions = self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"],
+                    )
+                else:
+                    decisions = self.cleanup_decisions(
+                        root, audit, cleanup=["public/starter"], validate=False,
+                    )
+                with self.assertRaisesRegex(ValueError, "cleanup|symlink|directory|stale audit"):
+                    create_preview(root, run, audit, decisions)
+                self.assertTrue((root / "public").exists())
+                if case == "symlink":
+                    self.assertTrue(cleanup.is_symlink())
+                elif case == "file":
+                    self.assertTrue(cleanup.is_file())
+                else:
+                    self.assertTrue(cleanup.is_dir())
+
+    def test_cleanup_decision_mode_and_state_are_token_bound(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        without_cleanup = create_preview(
+            root, run, audit, self.cleanup_decisions(root, audit, cleanup=[])
+        )
+        with_cleanup = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        self.assertNotEqual(without_cleanup.approval_token, with_cleanup.approval_token)
+
+        directory = root / "public/starter"
+        directory.chmod(0o711)
+        mode_audit = scan_project(root, ["starter"])
+        changed_mode = create_preview(
+            root,
+            run,
+            mode_audit,
+            self.cleanup_decisions(root, mode_audit, cleanup=["public/starter"]),
+        )
+        self.assertNotEqual(with_cleanup.approval_token, changed_mode.approval_token)
+        self.assertNotEqual(
+            with_cleanup.cleanup_dir_states["public/starter"]["mode"],
+            changed_mode.cleanup_dir_states["public/starter"]["mode"],
+        )
+
+        directory.chmod(0o755)
+        (directory / "sample-starter.txt").write_text("first\n", encoding="utf-8")
+        state_audit = scan_project(root, ["starter"])
+        changed_state = create_preview(
+            root,
+            run,
+            state_audit,
+            self.cleanup_decisions(
+                root,
+                state_audit,
+                cleanup=["public/starter"],
+                delete_paths=["public/starter/sample-starter.txt"],
+            ),
+        )
+        self.assertNotEqual(changed_mode.approval_token, changed_state.approval_token)
+        self.assertNotEqual(
+            changed_mode.cleanup_dir_states["public/starter"]["state_sha256"],
+            changed_state.cleanup_dir_states["public/starter"]["state_sha256"],
+        )
+
+    def test_apply_refuses_cleanup_manifest_before_creating_a_backup(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+
+        with self.assertRaisesRegex(ApplyError, "empty-directory cleanup.*not implemented"):
+            apply_preview(root, run, manifest.approval_token)
+        self.assertTrue((root / "public/starter").is_dir())
+        self.assertFalse((run / "backup").exists())
+
     def test_preview_refuses_delete_or_rename_that_contains_secret_files(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -1580,6 +1745,46 @@ class PreviewApplyTests(unittest.TestCase):
             decisions = load_decisions(self._decisions(base), audit)
             with self.assertRaisesRegex(ValueError, "symlink"):
                 create_preview(root, base / "run", audit, decisions)
+
+    def cleanup_fixture(self, child: str = ""):
+        temp = TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        root = copy_fixture("nextjs-starter", base)
+        directory = root / "public/starter"
+        directory.mkdir(parents=True)
+        if child:
+            path = directory / child
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("sample\n", encoding="utf-8")
+        return root, base / "run", scan_project(root, ["starter", "demo"])
+
+    def cleanup_decisions(
+        self,
+        root: Path,
+        audit,
+        *,
+        cleanup,
+        delete_paths=None,
+        rename_paths=None,
+        validate: bool = True,
+    ):
+        payload = {
+            "brand_mode": "placeholder",
+            "brand_profile": {},
+            "actions": [],
+            "cleanup_empty_dirs": cleanup,
+            "delete_paths": delete_paths or [],
+            "rename_paths": rename_paths or {},
+        }
+        if not validate:
+            return DecisionSet(
+                "placeholder", {}, [], list(payload["delete_paths"]),
+                dict(payload["rename_paths"]), [], list(cleanup),
+            )
+        path = root.parent / "cleanup-decisions.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return load_decisions(path, audit, root)
 
     def _decisions(self, base: Path) -> Path:
         path = base / "decisions.json"
