@@ -358,22 +358,28 @@ def _stable_source_directory_identity(root: Path, relpath: str) -> Tuple[int, in
                     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                     dir_fd=descriptor,
                 )
-                opened = os.fstat(child)
-                after = os.stat(
-                    part, dir_fd=descriptor, follow_symlinks=False,
-                )
-                if (
-                    (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-                    or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
-                ):
-                    os.close(child)
-                    raise ValueError(
-                        "cleanup directory changed while being pinned: {}".format(
-                            relpath
-                        )
+                try:
+                    opened = os.fstat(child)
+                    after = os.stat(
+                        part, dir_fd=descriptor, follow_symlinks=False,
                     )
-                os.close(descriptor)
-                descriptor = child
+                    if (
+                        (before.st_dev, before.st_ino)
+                        != (opened.st_dev, opened.st_ino)
+                        or (after.st_dev, after.st_ino)
+                        != (opened.st_dev, opened.st_ino)
+                    ):
+                        raise ValueError(
+                            "cleanup directory changed while being pinned: {}".format(
+                                relpath
+                            )
+                        )
+                    os.close(descriptor)
+                    descriptor = child
+                    child = -1
+                finally:
+                    if child >= 0:
+                        os.close(child)
             final = os.fstat(descriptor)
             return final.st_dev, final.st_ino
         except OSError as error:

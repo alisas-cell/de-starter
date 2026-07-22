@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from hashlib import sha256
+import errno
 import json
 import os
 import shutil
@@ -1827,6 +1828,8 @@ class PreviewApplyTests(unittest.TestCase):
 
         legacy = dict(payload)
         legacy.pop("preview_root_identity")
+        legacy.pop("cleanup_empty_dirs")
+        legacy.pop("cleanup_dir_states")
         manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
         with self.assertRaisesRegex(ApplyError, "approval token is tampered"):
             apply_preview(root, run, manifest.approval_token)
@@ -1835,7 +1838,6 @@ class PreviewApplyTests(unittest.TestCase):
             "run_id", "project_root", "preview_root", "source_hashes",
             "preview_hashes", "delete_tree_hashes", "rename_tree_hashes",
             "changed_paths", "deleted_paths", "renamed_paths",
-            "cleanup_empty_dirs", "cleanup_dir_states",
         )
         additive_names = (
             "brand_mode", "brand_result_hash", "decision_hash",
@@ -1850,6 +1852,131 @@ class PreviewApplyTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
         result = apply_preview(root, run, legacy["approval_token"])
         self.assertTrue(Path(result.backup_root).is_dir())
+
+    def test_cleanup_manifest_requires_preview_root_identity(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        manifest_path = run / "manifest.json"
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload.pop("preview_root_identity")
+        self._retoken_manifest(payload)
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        preview_root = Path(manifest.preview_root)
+        replacement = run / "same-content-different-preview-root"
+        shutil.copytree(preview_root, replacement)
+        shutil.rmtree(preview_root)
+        replacement.rename(preview_root)
+
+        self._assert_apply_refused_without_changes(
+            root,
+            run,
+            payload["approval_token"],
+            "cleanup manifest requires preview_root_identity|invalid preview manifest",
+        )
+
+        root, run, audit = self.cleanup_fixture()
+        create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=[]),
+        )
+        manifest_path = run / "manifest.json"
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload.pop("preview_root_identity")
+        self._retoken_manifest(payload)
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+        self._assert_apply_refused_without_changes(
+            root,
+            run,
+            payload["approval_token"],
+            "cleanup manifest requires preview_root_identity|invalid preview manifest",
+        )
+
+    def test_apply_closes_cleanup_child_fd_when_post_open_fstat_fails(self) -> None:
+        root, run, audit = self.cleanup_fixture()
+        manifest = create_preview(
+            root,
+            run,
+            audit,
+            self.cleanup_decisions(root, audit, cleanup=["public/starter"]),
+        )
+        real_open = os.open
+        real_fstat = os.fstat
+        child_fds = []
+        injected = []
+
+        def track_child(path, *args, **kwargs):
+            descriptor = real_open(path, *args, **kwargs)
+            if path == "public" and kwargs.get("dir_fd") is not None:
+                child_fds.append(descriptor)
+            return descriptor
+
+        def fail_after_child_open(descriptor):
+            if child_fds and descriptor == child_fds[-1] and not injected:
+                injected.append(True)
+                raise OSError(errno.EIO, "injected post-open fstat failure")
+            return real_fstat(descriptor)
+
+        root_fd = real_open(
+            str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        try:
+            with patch("destarter_lib.apply.os.open", side_effect=track_child), patch(
+                "destarter_lib.apply.os.fstat", side_effect=fail_after_child_open,
+            ):
+                with self.assertRaisesRegex(ApplyError, "cleanup directory.*unsafe"):
+                    apply_module._open_cleanup_directory(
+                        root_fd, manifest.cleanup_empty_dirs[0],
+                    )
+        finally:
+            os.close(root_fd)
+
+        self.assertTrue(injected)
+        self.assertEqual(len(child_fds), 1)
+        with self.assertRaises(OSError) as closed:
+            real_fstat(child_fds[0])
+        self.assertEqual(closed.exception.errno, errno.EBADF)
+        self.assertFalse((run / "backup").exists())
+
+    def test_preview_closes_cleanup_child_fd_when_post_open_fstat_fails(self) -> None:
+        root, _run, _audit = self.cleanup_fixture()
+        real_open = os.open
+        real_fstat = os.fstat
+        child_fds = []
+        injected = []
+
+        def track_child(path, *args, **kwargs):
+            descriptor = real_open(path, *args, **kwargs)
+            if path == "public" and kwargs.get("dir_fd") is not None:
+                child_fds.append(descriptor)
+            return descriptor
+
+        def fail_after_child_open(descriptor):
+            if child_fds and descriptor == child_fds[-1] and not injected:
+                injected.append(True)
+                raise OSError(errno.EIO, "injected post-open fstat failure")
+            return real_fstat(descriptor)
+
+        with patch("destarter_lib.preview.os.open", side_effect=track_child), patch(
+            "destarter_lib.preview.os.fstat", side_effect=fail_after_child_open,
+        ):
+            with self.assertRaisesRegex(ValueError, "cleanup directory.*unsafe"):
+                preview_module._stable_source_directory_identity(
+                    root, "public/starter",
+                )
+
+        self.assertTrue(injected)
+        self.assertEqual(len(child_fds), 1)
+        with self.assertRaises(OSError) as closed:
+            real_fstat(child_fds[0])
+        self.assertEqual(closed.exception.errno, errno.EBADF)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_preview_snapshot_refuses_a_symlink_inserted_after_cleanup_check(self) -> None:

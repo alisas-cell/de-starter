@@ -340,6 +340,8 @@ def _load_manifest(run: Path) -> Tuple[PreviewManifest, Mapping[str, object]]:
     cleanup_states = _cleanup_states(
         payload.get("cleanup_dir_states", {}), cleanup
     )
+    if has_cleanup_fields and not has_preview_root_identity:
+        _fail("cleanup manifest requires preview_root_identity")
     if payload.get("brand_mode") not in {"real", "placeholder"}:
         _fail("invalid manifest brand_mode")
     for name in (
@@ -461,22 +463,31 @@ def _open_cleanup_directory(
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                 dir_fd=parent_fd,
             )
-            opened = os.fstat(child)
-            after = os.stat(
-                part, dir_fd=parent_fd, follow_symlinks=False,
-            )
-            identity = _identity_from_stat(opened)
-            if (
-                _identity_from_stat(before) != identity
-                or _identity_from_stat(after) != identity
-            ):
-                os.close(child)
-                _fail("cleanup directory changed while being pinned: {}".format(relpath))
-            if index == len(parts) - 1:
-                directory_fd = child
-                return parent_fd, directory_fd, part, identity
-            os.close(parent_fd)
-            parent_fd = child
+            try:
+                opened = os.fstat(child)
+                after = os.stat(
+                    part, dir_fd=parent_fd, follow_symlinks=False,
+                )
+                identity = _identity_from_stat(opened)
+                if (
+                    _identity_from_stat(before) != identity
+                    or _identity_from_stat(after) != identity
+                ):
+                    _fail(
+                        "cleanup directory changed while being pinned: {}".format(
+                            relpath
+                        )
+                    )
+                if index == len(parts) - 1:
+                    directory_fd = child
+                    child = -1
+                    return parent_fd, directory_fd, part, identity
+                os.close(parent_fd)
+                parent_fd = child
+                child = -1
+            finally:
+                if child >= 0:
+                    os.close(child)
     except OSError as error:
         if directory_fd >= 0:
             os.close(directory_fd)
