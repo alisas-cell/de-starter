@@ -1,7 +1,9 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import os
 import sys
 import unittest
+from unittest import mock
 
 from tests.support import SKILL_SCRIPTS
 
@@ -13,6 +15,7 @@ from destarter_lib.files import (
     read_text,
     sha256_file,
 )
+from destarter_lib import files as files_module
 
 
 class FileDiscoveryTests(unittest.TestCase):
@@ -56,21 +59,98 @@ class FileDiscoveryTests(unittest.TestCase):
             self.assertEqual(set(records), {"public"})
             self.assertFalse(records["public"].is_empty)
 
-    def test_directory_state_hash_changes_for_direct_and_descendant_changes(self) -> None:
+    def test_directory_state_hash_changes_when_an_existing_descendant_changes(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             parent = root / "starter"
-            parent.mkdir()
+            child = parent / "nested" / "child.txt"
+            child.parent.mkdir(parents=True)
+            child.write_text("before", encoding="utf-8")
 
             initial = next(iter_project_directories(root))
-            (parent / "direct.txt").write_text("direct", encoding="utf-8")
-            after_direct = next(iter_project_directories(root))
-            (parent / "nested").mkdir()
-            (parent / "nested" / "child.txt").write_text("child", encoding="utf-8")
+            child.write_text("after", encoding="utf-8")
             after_descendant = next(iter_project_directories(root))
 
-            self.assertNotEqual(initial.state_sha256, after_direct.state_sha256)
-            self.assertNotEqual(after_direct.state_sha256, after_descendant.state_sha256)
+            self.assertNotEqual(initial.state_sha256, after_descendant.state_sha256)
+
+    def test_excluded_child_content_is_opaque_but_keeps_parent_non_empty(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "public"
+            hidden = parent / "node_modules"
+            hidden.mkdir(parents=True)
+            secret = hidden / "private.txt"
+            secret.write_text("before", encoding="utf-8")
+
+            initial = next(iter_project_directories(root))
+            secret.write_text("after", encoding="utf-8")
+            hidden.chmod(0)
+            try:
+                after = next(iter_project_directories(root))
+            finally:
+                hidden.chmod(0o755)
+
+            self.assertEqual(initial.state_sha256, after.state_sha256)
+            self.assertFalse(after.is_empty)
+            self.assertEqual(after.relpath, "public")
+
+    def test_directory_inventory_fails_closed_when_child_appears_after_snapshot(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "public"
+            parent.mkdir()
+            original = getattr(files_module, "_snapshot_directory", None)
+            mutated = False
+            parent_identity = (parent.stat().st_dev, parent.stat().st_ino)
+
+            def mutate_after_snapshot(descriptor: int):
+                nonlocal mutated
+                snapshot = original(descriptor)
+                current = os.fstat(descriptor)
+                if not mutated and (current.st_dev, current.st_ino) == parent_identity:
+                    mutated = True
+                    (parent / "raced-child").mkdir()
+                return snapshot
+
+            with mock.patch.object(
+                files_module,
+                "_snapshot_directory",
+                side_effect=mutate_after_snapshot,
+                create=True,
+            ):
+                with self.assertRaises(RuntimeError):
+                    list(iter_project_directories(root))
+
+    def test_directory_inventory_fails_closed_when_child_becomes_a_symlink(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "public"
+            child = parent / "safe"
+            outside = root / "outside"
+            child.mkdir(parents=True)
+            outside.mkdir()
+            original = getattr(files_module, "_snapshot_directory", None)
+            mutated = False
+            parent_identity = (parent.stat().st_dev, parent.stat().st_ino)
+
+            def replace_after_snapshot(descriptor: int):
+                nonlocal mutated
+                snapshot = original(descriptor)
+                current = os.fstat(descriptor)
+                if not mutated and (current.st_dev, current.st_ino) == parent_identity:
+                    mutated = True
+                    child.rmdir()
+                    child.symlink_to(outside, target_is_directory=True)
+                return snapshot
+
+            with mock.patch.object(
+                files_module,
+                "_snapshot_directory",
+                side_effect=replace_after_snapshot,
+                create=True,
+            ):
+                with self.assertRaises(RuntimeError):
+                    list(iter_project_directories(root))
 
     def test_excludes_secrets_dependencies_and_build_outputs(self) -> None:
         with TemporaryDirectory() as tmp:

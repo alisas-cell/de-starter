@@ -177,7 +177,7 @@ def _load_audit(path: Path) -> AuditResult:
         raise CliError("invalid audit directories")
     for value in payload["directories"]:
         item = _audit_dict(value, "directory", {"relpath", "mode", "state_sha256", "is_empty"})
-        if (type(item["mode"]) is not int or item["mode"] < 0 or item["mode"] > 0o777
+        if (type(item["mode"]) is not int or item["mode"] < 0 or item["mode"] > 0o7777
                 or type(item["is_empty"]) is not bool):
             raise CliError("invalid audit directory")
         directories.append(DirectoryRecord(

@@ -69,6 +69,27 @@ class CliEndToEndTests(unittest.TestCase):
             self.assertTrue((run / "verification" / "audit.json").is_file())
             self.assertIn("remaining", verified.stdout.lower())
 
+    def test_preview_reloads_a_directory_with_special_permission_bits(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "project"
+            directory = root / "public" / "starter"
+            directory.mkdir(parents=True)
+            directory.chmod(0o1755)
+            run = base / "run"
+            source = self.write_json(base / "source.json", {"source_terms": ["starter"]})
+            decisions = self.write_json(base / "decisions.json", {
+                "brand_mode": "placeholder", "brand_profile": {}, "actions": [],
+            })
+
+            audited = self.run_cli("audit", "--project", str(root), "--run-dir", str(run), "--source-config", str(source))
+            self.assertEqual(audited.returncode, 0, audited.stderr)
+            audit = json.loads((run / "audit.json").read_text(encoding="utf-8"))
+            record = next(item for item in audit["directories"] if item["relpath"] == "public/starter")
+            self.assertEqual(record["mode"], 0o1755)
+            preview = self.run_cli("preview", "--project", str(root), "--run-dir", str(run), "--decisions", str(decisions))
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+
     def test_semantic_lifecycle_removes_approved_testimonial_without_touching_protected_values(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
