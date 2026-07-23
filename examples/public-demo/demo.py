@@ -173,6 +173,19 @@ def check_applied(workspace: Path) -> dict:
     return {"status": "approved-scope-verified", "checks": 12}
 
 
+def tamper_previewed_project(workspace: Path) -> Path:
+    """Change one fixed synthetic file to demonstrate stale-preview refusal."""
+    owned = require_owned_workspace(workspace)
+    target = owned["project"] / "messages" / "en.json"
+    if not target.is_file() or target.is_symlink():
+        raise ValueError("expected synthetic demo message file is missing")
+    with target.open("ab") as handle:
+        handle.write(b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return target
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage a disposable, synthetic de-starter public demo workspace."
@@ -181,6 +194,11 @@ def _parser() -> argparse.ArgumentParser:
     for command in ("prepare", "inventory", "check", "reset"):
         child = subparsers.add_parser(command)
         child.add_argument("--workspace", type=Path, required=True)
+    tamper = subparsers.add_parser(
+        "tamper",
+        help="intentionally stale one file inside a sentinel-owned disposable demo",
+    )
+    tamper.add_argument("--workspace", type=Path, required=True)
     return parser
 
 
@@ -193,6 +211,14 @@ def main(argv: Sequence[str] = ()) -> int:
             payload = inventory_project(args.workspace)
         elif args.command == "check":
             payload = check_applied(args.workspace)
+        elif args.command == "tamper":
+            target = tamper_previewed_project(args.workspace)
+            payload = {
+                "status": "intentionally-stale",
+                "target": target.relative_to(
+                    require_owned_workspace(args.workspace)["project"]
+                ).as_posix(),
+            }
         else:
             reset_workspace(args.workspace)
             payload = {"status": "reset", "workspace": str(args.workspace)}

@@ -110,7 +110,7 @@ class PublicDemoWorkspaceTests(unittest.TestCase):
             self.assertTrue(all(not Path(path).is_absolute() for path in first["directories"]))
 
 
-class PublicDemoLifecycleTests(unittest.TestCase):
+class PublicDemoCliMixin:
     def run_cli(self, *args, expected=None):
         result = subprocess.run(
             [sys.executable, str(CLI), *args],
@@ -138,6 +138,8 @@ class PublicDemoLifecycleTests(unittest.TestCase):
         )
         return demo, project, run
 
+
+class PublicDemoLifecycleTests(PublicDemoCliMixin, unittest.TestCase):
     def test_example_decisions_match_the_fixed_seed_audit(self):
         self.assertTrue(DECISIONS_EXAMPLE.is_file(), "decisions example is missing")
         with TemporaryDirectory() as tmp:
@@ -206,6 +208,72 @@ class PublicDemoLifecycleTests(unittest.TestCase):
             self.assertIn("remaining", verification.stdout.lower())
             for artifact in ("backup", "restore.json", "reverse.diff", "apply-result.json"):
                 self.assertTrue((run / artifact).exists(), artifact)
+
+
+class PublicDemoRefusalTests(PublicDemoCliMixin, unittest.TestCase):
+    def prepare_preview(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        workspace = Path(temporary.name) / "lab"
+        _, project, run = self.prepare_audit(workspace)
+        shutil.copy2(DECISIONS_EXAMPLE, run / "decisions.json")
+        preview = self.run_cli(
+            "preview", "--project", str(project), "--run-dir", str(run),
+            "--decisions", str(run / "decisions.json"), expected=0,
+        )
+        token = preview.stdout.strip().splitlines()[-1]
+        return load_demo(), workspace, project, run, token
+
+    def test_wrong_token_rejects_before_any_project_write(self):
+        demo, workspace, project, run, _ = self.prepare_preview()
+        before = demo.inventory_project(workspace)
+
+        result = self.run_cli(
+            "apply", "--project", str(project), "--run-dir", str(run),
+            "--approval-token", "intentionally-wrong-demo-token",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("approval", result.stderr.lower())
+        self.assertEqual(demo.inventory_project(workspace), before)
+        self.assertFalse((run / "apply-result.json").exists())
+        self.assertFalse((run / "backup").exists())
+
+    def test_stale_preview_rejects_before_partial_approved_edits(self):
+        demo, workspace, project, run, token = self.prepare_preview()
+        tampered = demo.tamper_previewed_project(workspace)
+        after_tamper = demo.inventory_project(workspace)
+        tampered_bytes = tampered.read_bytes()
+
+        result = self.run_cli(
+            "apply", "--project", str(project), "--run-dir", str(run),
+            "--approval-token", token,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("approval failed", result.stderr.lower())
+        self.assertEqual(tampered.read_bytes(), tampered_bytes)
+        self.assertEqual(demo.inventory_project(workspace), after_tamper)
+        self.assertTrue((project / "app/demo").is_dir())
+        self.assertTrue((project / "public/starter").is_dir())
+        self.assertTrue((project / "public/starter-logo.svg").is_file())
+        self.assertFalse((project / "public/product-logo.svg").exists())
+        self.assertFalse((run / "apply-result.json").exists())
+        self.assertFalse((run / "backup").exists())
+
+    def test_tamper_refuses_an_unowned_directory(self):
+        demo = load_demo()
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "foreign"
+            target = workspace / "project" / "messages" / "en.json"
+            target.parent.mkdir(parents=True)
+            target.write_text('{"brand":"keep"}\n', encoding="utf-8")
+            before = target.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "sentinel"):
+                demo.tamper_previewed_project(workspace)
+
+            self.assertEqual(target.read_bytes(), before)
 
 
 if __name__ == "__main__":
