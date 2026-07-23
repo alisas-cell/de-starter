@@ -257,3 +257,13 @@
 - 真实购买项目验收、公开合成实验、Skill 回归与 CI 是三类不同证据，视频中明确分开，不把合成拒绝案例冒充真实项目事故。
 - 新增 `09-prompt-vs-skill.png`、`10-transaction-recovery.png` 和中文 Social Preview，补齐“为什么不只用提示词”“失败怎样恢复”“第一次进入仓库看到什么”。
 - 禁止使用“零风险”“一键恢复”“市场最强”等无法证明的表述；Skill 的 214/214 与真实项目的 63/65 基线保持分开说明。
+
+## 节点 28：GitHub 门面与最终公开验证完成
+
+- 公开证据包提交：[`fc33507`](https://github.com/alisas-cell/de-starter/commit/fc33507283f96b76961c5efe51ad5581c3588956)。本地完整回归为 220/220，其中包含新增的 6 项公开发布包契约测试。
+- 公开 CI：[`29992898743`](https://github.com/alisas-cell/de-starter/actions/runs/29992898743) 的 Python 3.9、3.11、3.13 三个任务全部成功。
+- 仓库门面：已设置安全边界导向的简介、10 个 Topics，以及 `bug`、`classification`、`feedback` 三个反馈标签；Discussions 保持关闭。
+- 中文 Social Preview：公开地址为 [`repository image`](https://repository-images.githubusercontent.com/1309423826/8d750f96-3c66-430f-96e8-3e848dc1b789)，远端 PNG 与仓库中的 1280×640 源图逐字节一致。
+- 反馈入口：[`Issue chooser`](https://github.com/alisas-cell/de-starter/issues/new/choose) 已包含 Bug、分类反馈、使用反馈和私密安全报告分流；安全问题继续走 [`Private vulnerability reporting`](https://github.com/alisas-cell/de-starter/security/advisories/new)。
+- 最新稳定版本仍为 [`v0.1.2`](https://github.com/alisas-cell/de-starter/releases/tag/v0.1.2)，没有移动或重写既有标签。
+- 最终公开检查：Markdown 本地链接、Issue YAML、10 张视频图与 1 张分享图规格全部通过；机器路径、私钥头、常见 GitHub/OpenAI token 形态和历史审批令牌为零命中。
