@@ -3522,20 +3522,28 @@ class PreviewApplyTests(unittest.TestCase):
             audit = scan_project(root, ["Northstar"])
             create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
 
-    def test_preview_token_is_deterministic_and_binds_explicit_keep(self) -> None:
+    def test_preview_token_tracks_root_identity_and_binds_explicit_keep(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = copy_fixture("nextjs-starter", base)
             audit = scan_project(root, ["Northstar"])
             first = create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
+            first_payload = json.loads((base / "run" / "manifest.json").read_text(encoding="utf-8"))
             second = create_preview(root, base / "run", audit, load_decisions(self._decisions(base), audit))
+            second_payload = json.loads((base / "run" / "manifest.json").read_text(encoding="utf-8"))
             finding = next(item for item in audit.findings if item.risk.value == "P3")
             keep_path = base / "keep.json"
             keep_path.write_text(json.dumps({"brand_mode": "placeholder", "brand_profile": {}, "actions": [{
                 "finding_id": finding.finding_id, "action": "keep",
             }]}), encoding="utf-8")
             kept = create_preview(root, base / "keep-run", audit, load_decisions(keep_path, audit))
-            self.assertNotEqual(first.approval_token, second.approval_token)
+            kept_payload = json.loads((base / "keep-run" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(first_payload["decision_hash"], second_payload["decision_hash"])
+            self.assertNotEqual(first_payload["decision_hash"], kept_payload["decision_hash"])
+            self.assertEqual(
+                first.approval_token == second.approval_token,
+                first.preview_root_identity == second.preview_root_identity,
+            )
             self.assertNotEqual(first.approval_token, kept.approval_token)
 
     def test_preview_ignores_root_git_file_like_a_worktree(self) -> None:
