@@ -24,6 +24,12 @@ $de-starter Audit this repository and show the report and proposed diff before m
 
 The Skill discovers source identities, asks for a real brand or neutral placeholders, produces separate file and source-named-directory audits, records Demo/sample decisions and explicitly scoped semantic edits, generates a project-external preview, stops for approval, applies only the approved token, validates the project, and scans again. Semantic edits require an audited file hash, inclusive line range, replacement, and a named purpose at gate one. P0 lines remain immutable; a P1-overlapping range additionally requires approved nonempty migration and rollback plans. Safe metadata records the migration-protection state in `semantic-edits.json` for gate two without exposing replacement or plan text.
 
+## Try the public demo
+
+Follow the [five-minute synthetic walkthrough](examples/public-demo/README.md) to reproduce audit, both approval gates, wrong-token refusal, stale-preview refusal, approved apply, classified verification, and recovery evidence without touching a purchased Starter.
+
+Risk is reduced, not zero. Run de-starter only with Git or a verified backup, review both approval gates, keep the external run directory, and validate after apply. A wrong decision that the user explicitly approves can still produce an unwanted change. The public demo is fictional and contains no purchased Starter source or proprietary asset.
+
 `cleanup_empty_dirs` is a separate permission. The directory must have an exact audit finding and explicit approval, and it must already be empty or become empty only through approved descendant operations. Apply never substitutes `rmdir` or global empty-directory cleanup: it binds directory state and identity to the preview token, then moves the exact directory into external backup with no-clobber transaction and rollback evidence. Ordinary unnamed empty directories remain untouched.
 
 If an approved rename needs new parent directories, `apply` creates them exclusively through no-follow descriptors after the final checks, records them in `restore.json`, and removes only transaction-owned empty parents during rollback.

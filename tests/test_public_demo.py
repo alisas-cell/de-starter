@@ -2,6 +2,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -274,6 +275,50 @@ class PublicDemoRefusalTests(PublicDemoCliMixin, unittest.TestCase):
                 demo.tamper_previewed_project(workspace)
 
             self.assertEqual(target.read_bytes(), before)
+
+
+class PublicDemoDocumentationTests(unittest.TestCase):
+    def test_public_demo_walkthrough_preserves_the_safety_contract(self):
+        readme = REPO_ROOT / "examples" / "public-demo" / "README.md"
+        self.assertTrue(readme.is_file(), "public demo walkthrough is missing")
+        text = readme.read_text(encoding="utf-8")
+        for phrase in (
+            "Risk is reduced, not zero",
+            "Git or a verified backup",
+            "review the private `preview.diff`",
+            "paste the exact token yourself",
+            "exit code 3 is expected",
+            "no one-command restore",
+        ):
+            self.assertIn(phrase, text)
+        self.assertNotRegex(text, r"--approval-token\s+[0-9a-f]{64}")
+        self.assertNotIn("$(python", text)
+        self.assertNotIn("$(tail", text)
+        self.assertLess(
+            text.index("review the private `preview.diff`"),
+            text.index("paste the exact token yourself"),
+        )
+
+    def test_root_readme_links_the_demo_and_states_nonzero_risk(self):
+        text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("examples/public-demo/README.md", text)
+        self.assertIn("Risk is reduced, not zero", text)
+        self.assertIn("Git or a verified backup", text)
+        self.assertIn("purchased Starter", text)
+
+    def test_public_demo_json_examples_are_strict_and_token_free(self):
+        source = json.loads(SOURCE_EXAMPLE.read_text(encoding="utf-8"))
+        decisions = json.loads(DECISIONS_EXAMPLE.read_text(encoding="utf-8"))
+        self.assertEqual(set(source), {"source_terms"})
+        self.assertEqual(
+            set(decisions),
+            {
+                "brand_mode", "brand_profile", "actions", "delete_paths",
+                "rename_paths", "text_edits", "cleanup_empty_dirs",
+            },
+        )
+        combined = SOURCE_EXAMPLE.read_text() + DECISIONS_EXAMPLE.read_text()
+        self.assertIsNone(re.search(r"\b[0-9a-f]{64}\b", combined))
 
 
 if __name__ == "__main__":
