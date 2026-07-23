@@ -144,7 +144,23 @@
 
 屏幕：`empty-dir-red-green`，字幕 `baseline 0/5 → final 5/5`。
 
-### 10:25–12:20 与公开市场现有做法比较
+### 10:25–11:20 真正发布后，Linux CI 又教了我一课
+
+口播：
+
+> 我原本以为 195 条测试全绿、干净克隆也通过，就已经可以放心发布了。真正推到 GitHub 后，Ubuntu 的 CI 却失败了一条。
+>
+> 我没有反复重跑碰运气，而是把失败日志读到具体断言。最后发现，生产 Skill 没坏，错的是测试假设：我在 macOS 上看到目录每次重建都会得到新 inode，就误以为 Linux 也一定这样。实际上 Linux 文件系统可以马上复用 inode，所以内容、身份和决策都相同时，token 合法地相同。
+>
+> 修复以后，测试会同时判断目录身份和 token：身份相同，token 必须相同；身份不同，token 必须不同。显式 keep 则单独通过 decision hash 验证，不再被运行路径掩盖。
+>
+> 我也没有强行移动已经公开的 v0.1.0 标签，而是按版本规范发布 v0.1.1。这个补丁没有改生产 Skill 逻辑，只修复跨平台测试，并把 GitHub Actions 升级到官方 Node 24 运行时。最后 Python 3.9、3.11、3.13 三个 job，以及 v0.1.1 标签 CI，全部通过，Annotations 为空。
+>
+> 这次经历让我更确定：本地全绿是发布前提，不是发布完成。公开 CI 不是装饰，它真的能发现另一种环境里的盲点。
+
+屏幕：`github-ci-green`。画面角落保留“基于已验证 GitHub 数据重绘”，不要说它是原始网页截图。
+
+### 11:20–13:15 与公开市场现有做法比较
 
 建议口播：
 
@@ -166,7 +182,7 @@
 
 > 本次公开检索范围内，我暂时没有发现覆盖同等完整链路的直接同类项目。如果你知道类似仓库，欢迎在评论区告诉我，我会补充公平对比。
 
-### 12:20–13:10 适合与不适合
+### 13:15–14:05 适合与不适合
 
 口播：
 
@@ -176,7 +192,7 @@
 >
 > v0.1 目前只支持 macOS/Linux 的 POSIX 安全能力，项目与外部运行目录还必须在同一文件系统。它也不能替代法律审查、真实支付迁移或生产密钥管理。
 
-### 13:10–结尾 GitHub 分享与 CTA
+### 14:05–结尾 GitHub 分享与 CTA
 
 口播：
 
@@ -198,9 +214,11 @@
 >
 > 真实结果：文件发现 523 到 227，剩余全部可解释；目录残留 1 到 0；没有新增测试失败，构建通过，恢复材料齐全。
 >
+> 真正发布后，Linux CI 还发现了一个 macOS 没暴露的 inode 复用测试假设。修复后 Python 3.9、3.11、3.13 和 v0.1.1 标签 CI 全绿，生产 Skill 逻辑没有改动。
+>
 > 我会把它开源到 GitHub。它不是“一键全删”，而是让 AI 的每一次删除都有证据、有边界、能恢复。
 
-画面顺序：`audit-overview` 4 秒 → `safety-gates` 8 秒 → `before-after` 12 秒 → `empty-dir-gate-two` 8 秒 → `empty-dir-final` 15 秒 → GitHub CTA。
+画面顺序：`audit-overview` 4 秒 → `safety-gates` 8 秒 → `before-after` 10 秒 → `empty-dir-gate-two` 7 秒 → `empty-dir-final` 12 秒 → `github-ci-green` 9 秒 → GitHub CTA。
 
 ## 3 分钟版本提纲
 
@@ -208,9 +226,10 @@
 2. 35 秒：P0–P3 和不能全局替换的原因。
 3. 35 秒：两道审批门与中性占位符。
 4. 30 秒：行级语义编辑、目录双审计和事务备份。
-5. 35 秒：523 → 227、1 → 0、测试与构建。
+5. 30 秒：523 → 227、1 → 0、测试与构建。
 6. 15 秒：baseline 0/5 → final 5/5。
-7. 10 秒：适用范围、限制、GitHub CTA。
+7. 20 秒：公开 Linux CI 暴露测试假设，v0.1.1 三档全绿。
+8. 10 秒：适用范围、限制、GitHub CTA。
 
 ## 所有可验证优势清单
 
@@ -238,6 +257,8 @@
 20. 独立安全审查与故障注入；
 21. 真实 Starter 前后验收；
 22. 公开仓库全树隐私扫描，不发布购买源码或真实 token。
+23. 公开 Linux CI 覆盖 Python 3.9/3.11/3.13，并用真实失败校正跨文件系统测试假设；
+24. 已公开标签不强行移动，以不可变 v0.1.1 Patch Release 交付修复。
 
 ## 演示录屏流程
 
@@ -255,7 +276,8 @@
 10. 在合成 fixture 上批准并 Apply；
 11. 展示 backup、restore、reverse diff 和 verify 汇总；
 12. 插入真实实验截图 `empty-dir-final`；
-13. 回到 GitHub README，展示限制和 Issue 入口。
+13. 插入 `github-ci-green`，说明这是基于公开 CI 数据重绘的证据摘要卡；
+14. 回到 GitHub README，展示 Latest Release、限制和 Issue 入口。
 
 ## 截图插入表
 
@@ -267,6 +289,7 @@
 | 开发与审查 | `04-empty-dir-red-green.png` | 解释测试全绿仍需复审 |
 | 真实 Gate 2 | `05-empty-dir-gate-two.png` | 展示 0 / 0 / 0 / 1 且未 Apply |
 | 最终效果 | `06-empty-dir-final.png` | 展示 523 → 227 与 1 → 0 |
+| 公开发布复核 | `07-github-ci-green.png` | 展示 macOS 本地全绿、Linux 首次失败与 v0.1.1 三档全绿 |
 
 ## 视频简介
 
@@ -276,6 +299,8 @@
 >
 > 真实验收：文件发现 523 → 227，目录残留 1 → 0；P0 与 LICENSE 保持，没有新增测试失败，production build 通过。
 >
+> 公开验证：Latest Release 为 v0.1.1；Python 3.9/3.11/3.13 的 main 与 tag CI 均通过，Annotations 为空。
+>
 > GitHub：`https://github.com/alisas-cell/de-starter`
 >
 > 欢迎提交 Issue，尤其欢迎提供不同技术栈、误报和安全边界反馈。
@@ -283,6 +308,8 @@
 ## 置顶评论
 
 > 仓库地址：`https://github.com/alisas-cell/de-starter`
+>
+> Latest Release：`https://github.com/alisas-cell/de-starter/releases/tag/v0.1.1`
 >
 > 提醒：它不会承诺关键词清零。剩余 P0/P1/P2/P3 可能是法律证据、兼容性标识或用户主动保留的功能。v0.1 自动 Apply 暂只支持 macOS/Linux，并要求项目与外部运行目录位于同一文件系统。
 >

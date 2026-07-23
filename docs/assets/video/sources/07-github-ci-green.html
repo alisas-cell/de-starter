@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>De-starter public release CI verification</title>
+  <style>
+    :root { --ink:#17213a; --muted:#69738a; --paper:#f5f7fd; --panel:rgba(255,255,255,.97); --line:#dce3f1; --violet:#6153d8; --violet-soft:#efedff; --teal:#11898b; --teal-soft:#e2f7f3; --red:#b64a57; --red-soft:#fff0f1; --amber:#ad681f; --amber-soft:#fff3df; }
+    * { box-sizing:border-box; }
+    html,body { width:1600px; height:900px; margin:0; overflow:hidden; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    body { background-image:radial-gradient(circle at 8% 10%,rgba(97,83,216,.13),transparent 28%),radial-gradient(circle at 92% 88%,rgba(17,137,139,.12),transparent 29%),linear-gradient(rgba(97,83,216,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(97,83,216,.035) 1px,transparent 1px); background-size:auto,auto,40px 40px,40px 40px; }
+    main { width:100%; height:100%; padding:43px 58px 38px; display:grid; grid-template-rows:auto 1fr auto; gap:24px; }
+    header { display:flex; justify-content:space-between; align-items:end; }
+    .eyebrow { display:flex; align-items:center; gap:10px; color:var(--violet); font-size:14px; font-weight:850; letter-spacing:.14em; text-transform:uppercase; }
+    .eyebrow::before { content:""; width:10px; height:10px; border-radius:50%; background:var(--violet); box-shadow:0 0 0 6px rgba(97,83,216,.12); }
+    h1 { margin:10px 0 0; font-family:Georgia,"Times New Roman",serif; font-size:52px; line-height:1.03; letter-spacing:-.045em; }
+    .badge { display:flex; align-items:center; gap:12px; padding:12px 18px; border:1px solid #bde7df; border-radius:999px; color:var(--teal); background:var(--teal-soft); font-size:15px; font-weight:900; }
+    .badge::before { content:"✓"; width:28px; height:28px; display:grid; place-items:center; border-radius:50%; color:white; background:var(--teal); }
+    .flow { display:grid; grid-template-columns:1fr 68px 1fr 68px 1.08fr; align-items:stretch; min-height:0; }
+    .arrow { display:grid; place-items:center; color:var(--violet); font-size:42px; font-weight:900; }
+    .card { padding:28px 28px 24px; border:1px solid var(--line); border-radius:25px; background:var(--panel); box-shadow:0 16px 48px rgba(43,53,91,.08); }
+    .card.fail { border-color:#f0c6cb; background:linear-gradient(145deg,var(--red-soft),white 72%); }
+    .card.pass { border-color:#bde7df; background:linear-gradient(145deg,var(--teal-soft),white 72%); }
+    .step { color:var(--muted); font-size:12px; font-weight:900; letter-spacing:.13em; text-transform:uppercase; }
+    .state { margin:22px 0 12px; font-family:Georgia,"Times New Roman",serif; font-size:43px; line-height:1; letter-spacing:-.04em; }
+    .state.red { color:var(--red); } .state.green { color:var(--teal); }
+    .summary { color:var(--muted); font-size:15px; line-height:1.55; }
+    .facts { display:grid; gap:11px; margin-top:23px; }
+    .fact { display:flex; align-items:center; gap:12px; padding:13px 14px; border:1px solid var(--line); border-radius:15px; background:rgba(255,255,255,.82); }
+    .dot { flex:0 0 28px; width:28px; height:28px; display:grid; place-items:center; border-radius:50%; color:white; background:var(--violet); font-size:13px; font-weight:900; }
+    .fail .dot { background:var(--red); } .pass .dot { background:var(--teal); }
+    .fact strong { display:block; font-size:14px; } .fact span { display:block; margin-top:3px; color:var(--muted); font-size:12px; }
+    .jobs { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; margin-top:22px; }
+    .job { padding:14px 8px; border:1px solid #bde7df; border-radius:14px; text-align:center; background:white; }
+    .job b { display:block; color:var(--teal); font-size:20px; } .job span { display:block; margin-top:5px; color:var(--muted); font-size:11px; font-weight:850; }
+    .commit { margin-top:13px; padding:12px 14px; border-radius:14px; color:var(--violet); background:var(--violet-soft); font-size:13px; font-weight:850; text-align:center; }
+    footer { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:14px; }
+    footer strong { color:var(--ink); }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="eyebrow">Public release verification · reconstructed evidence card</div>
+        <h1>本地全绿，不等于公开发布已经完成</h1>
+      </div>
+      <div class="badge">v0.1.1 · Latest · tag CI passed</div>
+    </header>
+    <section class="flow">
+      <article class="card">
+        <div class="step">01 · macOS local</div>
+        <div class="state">195 / 195</div>
+        <div class="summary">严格 ResourceWarning 模式通过；CLI 13 / 13，Skill 结构、编译与隐私检查通过。</div>
+        <div class="facts">
+          <div class="fact"><span class="dot">✓</span><div><strong>真实 Starter 验收完成</strong><span>文件 523 → 227；目录 1 → 0</span></div></div>
+          <div class="fact"><span class="dot">✓</span><div><strong>公开仓库干净克隆通过</strong><span>安装副本与完整测试再次通过</span></div></div>
+        </div>
+      </article>
+      <div class="arrow">→</div>
+      <article class="card fail">
+        <div class="step">02 · first Linux CI</div>
+        <div class="state red">1 failure</div>
+        <div class="summary">生产逻辑没有失败；失败来自测试假设：同一路径重新创建后，inode 被认为一定会变化。</div>
+        <div class="facts">
+          <div class="fact"><span class="dot">!</span><div><strong>Ubuntu 可立即复用 inode</strong><span>完全相同的 token 合法地保持相同</span></div></div>
+          <div class="fact"><span class="dot">↺</span><div><strong>不掩盖、不重跑碰运气</strong><span>读日志 → 追根因 → 最小可移植修复</span></div></div>
+        </div>
+      </article>
+      <div class="arrow">→</div>
+      <article class="card pass">
+        <div class="step">03 · v0.1.1 tag CI</div>
+        <div class="state green">3 / 3 PASS</div>
+        <div class="summary">Python 三档矩阵与标签构建全部成功；Node 24 官方 Action，Annotations 为空。</div>
+        <div class="jobs">
+          <div class="job"><b>✓</b><span>PYTHON 3.9</span></div>
+          <div class="job"><b>✓</b><span>PYTHON 3.11</span></div>
+          <div class="job"><b>✓</b><span>PYTHON 3.13</span></div>
+        </div>
+        <div class="commit">Latest tag · v0.1.1 · commit 437d3d6</div>
+      </article>
+    </section>
+    <footer><span><strong>De-starter</strong> · local evidence → public CI → patch release</span><span>基于已验证 GitHub 数据重绘 · 非原始网页截图</span></footer>
+  </main>
+</body>
+</html>

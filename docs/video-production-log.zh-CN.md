@@ -216,6 +216,16 @@
 - 最终重复实验：锁定 base hash 的 baseline 5 份 scenario pass 为 0/5；稳定失败项是显式目录数字、`cleanup_empty_dirs`、事务恢复，`rmdir` 明确拒绝有 3/5 波动。锁定 final hash 后正式 5 份全部 9/9，scenario pass 5/5（100%），9 个 rubric 项各 5/5，binary variance 为 0，且每份都字面输出 `Directory residue: 1`。
 - 排除规则：单次 6→8→9 和一份曾误把用户催促当成批准的首轮 final 仅保留为 development trace，不进入最终统计；收紧“必须请求明确批准、不得先记为已批准”后才锁定 final hash。
 
+## 节点 25：真正公开后，Linux CI 推翻了一个 macOS 测试假设
+
+- 首次公开状态：本地严格 195/195、CLI 13/13、干净公开克隆与安装副本均通过，但 GitHub Ubuntu 的 Python 3.11/3.13 运行在同一条 token 测试失败。
+- 根因：测试把“同一路径的 Preview 目录重建后 inode 必然不同”当作跨平台事实；APFS 本地连续分配新 inode，Linux 文件系统可立即复用 inode。生产 token 已同时绑定当前目录身份、内容、状态和决策；相同身份与相同输入得到相同 token 是合法确定性结果。
+- 修复：比较两次 Preview 身份是否相同；身份相同就要求 token 相同，身份不同就要求 token 不同。同时单独比较 `decision_hash`，证明显式 `keep` 确实进入审批语义，而不是被运行路径变化掩盖。
+- 发布纪律：不强行移动已公开的 `v0.1.0` 标签，发布不可变的补丁版 `v0.1.1`。补丁不改生产 Skill 逻辑，只修测试可移植性，并把 GitHub Actions 升级到官方 Node 24 运行时。
+- 最终证据：`main` 与 `v0.1.1` 标签触发的 Python 3.9 / 3.11 / 3.13 三个 job 均通过；最新成功运行 Annotations 为空；Latest tag 指向公开 commit `437d3d6`。
+- 公开画面：`docs/assets/video/07-github-ci-green.png`。这是基于已验证 GitHub 数据重绘的证据摘要卡，不冒充原始网页截图。
+- 口播位置：测试章节之后，用来说明“本地全绿只是发布前提，公开 CI 才是另一种真实环境测试”。
+
 ## 已预留的最终公开镜头
 
 | 镜头 ID | 证据成熟条件 | 画面 | 建议停留 | 隐私要求 |
@@ -223,3 +233,4 @@
 | `empty-dir-red-green` | Task 1 聚焦测试完成并经独立复核 | 左侧 RED：旧能力无法表示空目录；右侧 GREEN：目录记录与独立发现通过 | 6–8 秒 | 只用合成 `public/starter/`，隐藏终端绝对路径 |
 | `empty-dir-gate-two` | 新真实预览生成、尚未 Apply | 0 个文件变化、0 删除、0 重命名、1 个空目录清理、保留父目录、等待新 token | 7–10 秒 | 不显示真实 token、私有路径或源码 |
 | `empty-dir-final` | 精确 token 获批并通过最终验证 | 文件发现 523 → 227；目录残留 1 → 0；原备份与新增恢复记录均可用 | 9–12 秒 | 聚合指标和通用标签；不展示恢复清单中的私有路径 |
+| `github-ci-green` | `v0.1.1` main 与 tag CI 三档矩阵均通过 | 本地 195/195 → Linux 首次失败 → Python 3.9/3.11/3.13 全绿 | 10–14 秒 | 只用公开 commit 短哈希和聚合状态；注明为重绘证据卡 |
