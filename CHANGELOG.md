@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 - 2026-07-23
+
+- Made the preview-root identity regression portable to Linux filesystems that may immediately reuse an inode, while continuing to verify identity-bound tokens and explicit keep decisions.
+- Updated GitHub Actions to the official Node 24 runtimes and verified the Python 3.9, 3.11, and 3.13 matrix without annotations.
+- No production Skill behavior changed from v0.1.0.
+
 ## 0.1.0 - 2026-07-23
 
 - Added deterministic source-identity and residue scanning.
