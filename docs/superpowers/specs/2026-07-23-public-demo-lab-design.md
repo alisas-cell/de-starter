@@ -1,7 +1,7 @@
 # Public Demo Lab Design
 
 Date: 2026-07-23
-Status: approved direction, written specification pending final user review
+Status: approved by the user on 2026-07-23
 
 ## Purpose
 
