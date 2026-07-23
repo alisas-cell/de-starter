@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>de-starter 事务执行与恢复证据</title>
+  <style>
+    * { box-sizing:border-box; }
+    :root { --navy:#10213f; --blue:#3265d5; --cyan:#42b7c5; --green:#168768; --amber:#e39a2d; --red:#cc5647; --muted:#5d6880; --line:#d9e0eb; }
+    html,body { width:100%; height:100%; margin:0; }
+    body { font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; background:linear-gradient(135deg,#f8f5ee 0%,#edf4fb 100%); color:var(--navy); }
+    main { width:1600px; height:900px; padding:54px 64px 44px; overflow:hidden; display:flex; flex-direction:column; gap:28px; }
+    header { display:flex; justify-content:space-between; align-items:flex-end; }
+    .eyebrow { color:var(--blue); font-size:21px; font-weight:800; letter-spacing:.14em; margin-bottom:9px; }
+    h1 { margin:0; font-size:52px; line-height:1.12; letter-spacing:-.035em; }
+    .boundary { background:#fff1d9; color:#8f5a0f; border:1px solid #f0ce96; padding:14px 20px; border-radius:18px; font-size:21px; font-weight:800; }
+    .flow { display:grid; grid-template-columns:repeat(6,1fr); gap:14px; align-items:stretch; }
+    .step { min-height:184px; background:rgba(255,255,255,.94); border:1px solid var(--line); border-radius:22px; padding:20px 18px; position:relative; box-shadow:0 14px 35px rgba(28,50,84,.08); }
+    .step:not(:last-child)::after { content:"›"; position:absolute; right:-13px; top:64px; z-index:2; color:var(--blue); font-size:40px; font-weight:900; }
+    .num { width:34px; height:34px; border-radius:50%; background:var(--blue); color:white; display:grid; place-items:center; font-weight:900; margin-bottom:12px; }
+    .step h2 { margin:0 0 9px; font-size:25px; line-height:1.2; }
+    .step p { margin:0; color:var(--muted); font-size:18px; line-height:1.45; }
+    .outside { border:2px dashed var(--cyan); background:#f2fcfd; }
+    .backup { border:2px solid var(--green); background:#effaf6; }
+    .outcomes { display:grid; grid-template-columns:1fr 1fr; gap:24px; flex:1; min-height:0; }
+    .card { background:rgba(255,255,255,.94); border-radius:26px; padding:25px 29px; box-shadow:0 16px 40px rgba(28,50,84,.09); display:flex; flex-direction:column; }
+    .card.success { border-top:8px solid var(--green); }
+    .card.failure { border-top:8px solid var(--red); }
+    .card h3 { margin:0 0 14px; font-size:30px; }
+    .proofs { display:grid; gap:10px; }
+    .proof { display:grid; grid-template-columns:34px 1fr; gap:12px; align-items:start; color:var(--muted); font-size:19px; line-height:1.4; }
+    .proof b { width:30px; height:30px; border-radius:50%; display:grid; place-items:center; background:var(--green); color:white; }
+    .failure .proof b { background:var(--red); }
+    .honesty { margin-top:auto; padding-top:13px; color:#7b4c11; font-size:18px; font-weight:750; }
+    footer { min-height:70px; background:var(--navy); color:white; border-radius:21px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; font-size:22px; }
+    footer strong { color:#73dfbd; }
+    footer span:last-child { color:#cbd4e5; font-size:18px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><div class="eyebrow">事务化执行不是一句“可以回滚”</div><h1>先把恢复能力准备好，<br />再允许有限写入。</h1></div>
+      <div class="boundary">两道门之间仍然只读</div>
+    </header>
+    <section class="flow">
+      <article class="step"><div class="num">1</div><h2>真实项目只读</h2><p>审计文件与空目录，P0–P3 分级，证明源项目未变。</p></article>
+      <article class="step"><div class="num">2</div><h2>第一道门</h2><p>用户批准处理范围；未确定品牌时暂停或使用中性占位符。</p></article>
+      <article class="step outside"><div class="num">3</div><h2>项目外精确预览</h2><p>生成完整差异、哈希、验证报告和当次批准令牌。</p></article>
+      <article class="step"><div class="num">4</div><h2>第二道门</h2><p>只接受当前预览对应的完整令牌；错误或过期就拒绝。</p></article>
+      <article class="step backup"><div class="num">5</div><h2>项目外事务备份</h2><p>原内容与空目录先进入备份，并写入恢复顺序和元数据。</p></article>
+      <article class="step"><div class="num">6</div><h2>有限执行并验证</h2><p>只执行获批操作；复查残留、项目测试和范围是否扩大。</p></article>
+    </section>
+    <section class="outcomes">
+      <article class="card success">
+        <h3>执行成功：留下三类可核对证据</h3>
+        <div class="proofs">
+          <div class="proof"><b>✓</b><span>执行结果：实际变更与批准范围逐项对应</span></div>
+          <div class="proof"><b>✓</b><span>恢复清单：记录备份对象、顺序和必要元数据</span></div>
+          <div class="proof"><b>✓</b><span>反向差异：供人工复核怎样撤回内容编辑</span></div>
+        </div>
+        <div class="honesty">恢复材料齐全，但当前版本没有“一键恢复命令”。</div>
+      </article>
+      <article class="card failure">
+        <h3>执行中失败：从项目外备份回滚</h3>
+        <div class="proofs">
+          <div class="proof"><b>!</b><span>停止后续操作，不继续扩大已经失败的变更范围</span></div>
+          <div class="proof"><b>↺</b><span>按逆序恢复已移动对象与原始内容，并保留失败记录</span></div>
+          <div class="proof"><b>=</b><span>再次清点和验证；恢复不完整时明确报告，不假装成功</span></div>
+        </div>
+        <div class="honesty">用户批准错误决定仍可能造成伤害，所以低风险不等于零风险。</div>
+      </article>
+    </section>
+    <footer><strong>像先搬进保险柜，不是直接扔进垃圾桶。</strong><span>项目外预览 · 项目外备份 · 失败回滚 · 执行后验证</span></footer>
+  </main>
+</body>
+</html>

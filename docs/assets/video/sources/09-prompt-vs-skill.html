@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>普通提示词与 de-starter Skill 的差别</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { --ink:#14213d; --muted:#5d6880; --paper:#f7f4ed; --red:#d95645; --blue:#315cce; --green:#168768; --line:#d8deea; }
+    html, body { width:100%; height:100%; margin:0; }
+    body { font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:radial-gradient(circle at 18% 0%,#fff 0,#f7f4ed 42%,#edf2fa 100%); }
+    main { width:1600px; height:900px; padding:60px 72px 48px; display:flex; flex-direction:column; gap:34px; overflow:hidden; }
+    header { display:flex; align-items:flex-end; justify-content:space-between; gap:50px; }
+    .eyebrow { color:var(--blue); font-weight:800; letter-spacing:.14em; font-size:22px; margin-bottom:12px; }
+    h1 { margin:0; font-size:55px; line-height:1.12; letter-spacing:-.04em; }
+    .note { max-width:460px; color:var(--muted); font-size:24px; line-height:1.55; text-align:right; }
+    .compare { display:grid; grid-template-columns:1fr 92px 1fr; flex:1; min-height:0; align-items:stretch; }
+    .card { border-radius:30px; padding:34px 38px; background:rgba(255,255,255,.9); border:1px solid var(--line); box-shadow:0 20px 60px rgba(40,55,90,.1); display:flex; flex-direction:column; }
+    .card.prompt { border-top:10px solid var(--red); }
+    .card.skill { border-top:10px solid var(--green); }
+    .tag { display:inline-flex; align-self:flex-start; padding:8px 16px; border-radius:999px; font-size:20px; font-weight:800; color:white; background:var(--red); }
+    .skill .tag { background:var(--green); }
+    h2 { margin:18px 0 8px; font-size:37px; }
+    .sub { color:var(--muted); font-size:21px; line-height:1.45; margin-bottom:20px; }
+    .rows { display:grid; gap:12px; margin-top:auto; }
+    .row { display:grid; grid-template-columns:42px 1fr; gap:13px; align-items:start; padding:13px 16px; border-radius:16px; background:#f4f6fa; font-size:21px; line-height:1.35; }
+    .icon { width:30px; height:30px; border-radius:50%; display:grid; place-items:center; color:white; font-weight:900; background:var(--red); }
+    .skill .icon { background:var(--green); }
+    .versus { display:grid; place-items:center; font-size:30px; font-weight:900; color:#8b93a5; }
+    footer { min-height:84px; border-radius:24px; background:var(--ink); color:white; display:flex; align-items:center; justify-content:space-between; padding:0 32px; font-size:24px; }
+    footer strong { color:#75e1bc; font-size:27px; }
+    footer span:last-child { color:#c8d1e4; font-size:20px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><div class="eyebrow">为什么不只用一句提示词</div><h1>一句提示词可以开始，<br />Skill 负责把安全流程走完。</h1></div>
+      <div class="note">两者不是互相取代：提示词表达这一次的意图，Skill 固化每一次都应该遵守的执行边界。</div>
+    </header>
+    <section class="compare">
+      <article class="card prompt">
+        <div class="tag">普通对话提示词</div>
+        <h2>能启动任务，但依赖当次对话</h2>
+        <div class="sub">结果取决于用户有没有想到全部要求，以及当前 Agent 有没有逐项补问。</div>
+        <div class="rows">
+          <div class="row"><span class="icon">1</span><span>每个新项目都要重新解释保护项、审批方式和回滚要求</span></div>
+          <div class="row"><span class="icon">2</span><span>容易漏掉许可证、功能键、空目录或状态过期等边界</span></div>
+          <div class="row"><span class="icon">3</span><span>步骤可能随上下文变化，难以让别人复现和审查</span></div>
+          <div class="row"><span class="icon">4</span><span>一句“继续”可能被误解为允许写入</span></div>
+        </div>
+      </article>
+      <div class="versus">对比</div>
+      <article class="card skill">
+        <div class="tag">de-starter Skill</div>
+        <h2>把安全边界变成可复用流程</h2>
+        <div class="sub">Agent 仍然负责判断与执行，但必须按同一套协议留下证据。</div>
+        <div class="rows">
+          <div class="row"><span class="icon">✓</span><span>固定 P0–P3 分级，两道人工审批门，不把催促当批准</span></div>
+          <div class="row"><span class="icon">✓</span><span>预览与备份放在项目外，避免安全材料污染源码</span></div>
+          <div class="row"><span class="icon">✓</span><span>错误令牌和过期预览自动拒绝，防止部分执行</span></div>
+          <div class="row"><span class="icon">✓</span><span>执行后再次验证，并生成恢复清单和反向差异</span></div>
+        </div>
+      </article>
+    </section>
+    <footer><strong>提示词是起点，Skill 是可复用的执行边界。</strong><span>低风险不等于零风险 · 用户仍要检查并批准决定</span></footer>
+  </main>
+</body>
+</html>
