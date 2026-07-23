@@ -54,7 +54,7 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q skills/de-starter/scripts
 ```
 
-Current public verification: 195/195 full regression tests, 13/13 CLI lifecycle tests, and a five-sample fresh-context pressure scenario improving from baseline 0/5 to final 5/5.
+Current public verification: 214/214 full regression tests, including 19 public-demo workspace, lifecycle, refusal, documentation, media, privacy, and reset-boundary checks; 13/13 core CLI lifecycle tests; and a five-sample fresh-context pressure scenario improving from baseline 0/5 to final 5/5.
 
 ## Public evidence
 

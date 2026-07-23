@@ -196,7 +196,7 @@
 >
 > 最后我重新生成 Preview，人工检查本地私有 diff，再手动粘贴当前令牌。只有这一次，获批的 P2 和 P3 范围被处理。LICENSE 字节保持不变，`starter_monthly` 保持不变，普通 `public/uploads` 空目录也保持不变；只有获批的 `public/starter` 进入外部备份。
 >
-> 这里还要说明一个容易夸大的地方：v0.1.1 有事务失败自动回滚、外部字节备份、`restore.json` 和 `reverse.diff`，但目前没有一键恢复命令。所以视频里我会说“恢复证据齐全”，不会说成“用户点一下就能恢复”。
+> 这里还要说明一个容易夸大的地方：v0.1.2 沿用已经验证的事务失败自动回滚、外部字节备份、`restore.json` 和 `reverse.diff`，但目前没有一键恢复命令。所以视频里我会说“恢复证据齐全”，不会说成“用户点一下就能恢复”。
 
 屏幕顺序：
 
@@ -336,7 +336,7 @@
 >
 > 真实验收：文件发现 523 → 227，目录残留 1 → 0；P0 与 LICENSE 保持，没有新增测试失败，production build 通过。
 >
-> 公开验证：Latest Release 为 v0.1.1；Python 3.9/3.11/3.13 的 main 与 tag CI 均通过，Annotations 为空。
+> 公开验证：Latest Release 为 v0.1.2；完整套件 214/214；Python 3.9/3.11/3.13 的 main 与 tag CI 均通过。
 >
 > GitHub：`https://github.com/alisas-cell/de-starter`
 >
@@ -346,7 +346,7 @@
 
 > 仓库地址：`https://github.com/alisas-cell/de-starter`
 >
-> Latest Release：`https://github.com/alisas-cell/de-starter/releases/tag/v0.1.1`
+> Latest Release：`https://github.com/alisas-cell/de-starter/releases/tag/v0.1.2`
 >
 > 提醒：它不会承诺关键词清零。剩余 P0/P1/P2/P3 可能是法律证据、兼容性标识或用户主动保留的功能。v0.1 自动 Apply 暂只支持 macOS/Linux，并要求项目与外部运行目录位于同一文件系统。
 >

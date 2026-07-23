@@ -11,7 +11,7 @@
 | `empty-dir-gate-two` | `docs/assets/video/sources/05-empty-dir-gate-two.html` | 公开安全；来自真实验收的聚合结果，但不含真实 token、私有路径、源码或购买项目身份 | 0 个文件变化、0 个普通删除、0 个重命名、1 个精确空目录清理；父级保留；预览已完成但仍等待 Gate 2 精确批准 | “这次真实验收只剩一个空目录：文件不改、文件不删、路径不改名，只清理这一个获批目录。操作很小，但 Skill 仍然停在第二道门；截图隐藏 token，真实值只在私有审批里展示。” | `docs/assets/video/05-empty-dir-gate-two.png` |
 | `empty-dir-final` | `docs/assets/video/sources/06-empty-dir-final.html` | 公开安全；只含真实验收聚合数字与通用恢复证据 | 文件发现 523 → 227，目录残留 1 → 0；P0–P3 保留分布；外部备份、恢复材料、lint/build 与零新增测试失败 | “最终结果要看两套数字：文件发现从 523 到 227，剩余全部有保留理由；目录残留从 1 到 0。它没有靠删除目录美化文件数字，原目录还在外部备份，恢复材料齐全。” | `docs/assets/video/06-empty-dir-final.png` |
 | `github-ci-green` | `docs/assets/video/sources/07-github-ci-green.html` | 公开安全；基于公开 GitHub CI 数据重绘，不是原始网页截图 | macOS 本地 195/195 → Linux 首次 1 failure → v0.1.1 标签 CI Python 3.9/3.11/3.13 全绿；Annotations 为空 | “真正发布后，Linux CI 揪出了一个 macOS 没暴露的 inode 复用测试假设。我没有重跑碰运气，而是读日志、修正跨平台断言，再发布不可变的 v0.1.1 补丁版；main 和标签 CI 都是三档全绿。” | `docs/assets/video/07-github-ci-green.png` |
-| `public-demo-safety` | `docs/assets/video/sources/08-public-demo-safety.html` | 公开安全；只含公开合成演示聚合结果，令牌标为 `REDACTED`，无购买源码与本机路径 | 错误令牌和过期预览都被拒绝且无部分修改；当前精确批准只处理 P2/P3；P0/P1、普通空目录和恢复证据分别核对 | “这不是购买项目，而是任何人都能复现的公开合成演示。错误令牌不写，过期预览不写，只有人工检查过的当前范围才写。低风险不等于零风险；v0.1.1 有事务回滚和恢复证据，但没有一键恢复命令。” | `docs/assets/video/08-public-demo-safety.png` |
+| `public-demo-safety` | `docs/assets/video/sources/08-public-demo-safety.html` | 公开安全；只含公开合成演示聚合结果，令牌标为 `REDACTED`，无购买源码与本机路径 | 错误令牌和过期预览都被拒绝且无部分修改；当前精确批准只处理 P2/P3；P0/P1、普通空目录和恢复证据分别核对 | “这不是购买项目，而是任何人都能复现的公开合成演示。错误令牌不写，过期预览不写，只有人工检查过的当前范围才写。低风险不等于零风险；v0.1.2 有事务回滚和恢复证据，但没有一键恢复命令。” | `docs/assets/video/08-public-demo-safety.png` |
 
 ## 剪辑说明
 

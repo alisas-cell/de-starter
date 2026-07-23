@@ -243,6 +243,7 @@
 - 错误令牌证据：Apply 在创建 backup 和 `apply-result.json` 前拒绝，前后 project inventory 完全一致。
 - 过期预览证据：Preview 后固定合成文件发生变化，旧令牌返回 approval failed；P2 Demo、原资产和获批空目录都仍在，没有部分执行。
 - 成功路径：重新生成并人工检查当前 Preview 后，只有获批 P2/P3 和 `cleanup_empty_dirs` 生效；LICENSE、P1 `starter_monthly` 和普通 `public/uploads` 保持。
-- 诚实边界：低风险不等于零风险。用户仍可能批准错误决定，必须使用 Git 或可靠备份、检查两道门并在 Apply 后验证。v0.1.1 有事务失败回滚和恢复证据，但没有一键恢复命令。
+- Reset 边界复审：又用 4 个 RED 暴露固定哨兵可复制、未知顶层文件会被一起删除、仓库内工作区未拒绝的问题；将哨兵绑定规范化 workspace 身份并拒绝未知顶层项后，最终完整套件为 214/214。
+- 诚实边界：低风险不等于零风险。用户仍可能批准错误决定，必须使用 Git 或可靠备份、检查两道门并在 Apply 后验证。v0.1.2 沿用事务失败回滚和恢复证据，但没有一键恢复命令。
 - 公开画面：`docs/assets/video/08-public-demo-safety.png`，令牌只显示 `REDACTED`，不出现本机路径或购买项目身份。
 - 口播位置：真实项目效果之后、市场对比之前；让观众先看到可复现证据，再听功能差异总结。

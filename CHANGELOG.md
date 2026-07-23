@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 - 2026-07-23
+
+- Added a fully synthetic public demo lab with sentinel-owned prepare, inventory, stale-preview exercise, post-apply checks, and safe reset commands.
+- Added a staged five-minute walkthrough that preserves both human approval gates and never auto-extracts or submits a preview token.
+- Added wrong-token and stale-preview refusal tests proving zero partial approved edits, plus protected P0/P1 and ordinary-empty-directory invariants on the success path.
+- Added an explicit non-zero-risk safety boundary, a redacted 16:9 evidence card, and updated Chinese self-media materials.
+- Expanded the full regression suite from 195 to 214 tests. No production Skill behavior changed from v0.1.1.
+
 ## 0.1.1 - 2026-07-23
 
 - Made the preview-root identity regression portable to Linux filesystems that may immediately reuse an inode, while continuing to verify identity-bound tokens and explicit keep decisions.
