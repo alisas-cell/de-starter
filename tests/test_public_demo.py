@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+import struct
 import sys
 import unittest
 
@@ -319,6 +320,48 @@ class PublicDemoDocumentationTests(unittest.TestCase):
         )
         combined = SOURCE_EXAMPLE.read_text() + DECISIONS_EXAMPLE.read_text()
         self.assertIsNone(re.search(r"\b[0-9a-f]{64}\b", combined))
+
+
+class PublicDemoMediaTests(unittest.TestCase):
+    def test_chinese_media_documents_include_the_honest_safety_segment(self):
+        documents = (
+            REPO_ROOT / "docs" / "self-media-package.zh-CN.md",
+            REPO_ROOT / "docs" / "video-shot-list.zh-CN.md",
+            REPO_ROOT / "docs" / "video-production-log.zh-CN.md",
+        )
+        for document in documents:
+            text = document.read_text(encoding="utf-8")
+            for phrase in (
+                "公开合成演示",
+                "错误令牌",
+                "过期预览",
+                "低风险不等于零风险",
+                "没有一键恢复命令",
+            ):
+                self.assertIn(phrase, text, "%s: %s" % (document.name, phrase))
+
+    def test_public_demo_evidence_source_is_redacted(self):
+        source = (
+            REPO_ROOT / "docs" / "assets" / "video" / "sources"
+            / "08-public-demo-safety.html"
+        )
+        self.assertTrue(source.is_file(), "public demo evidence HTML is missing")
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("REDACTED", text)
+        self.assertIn("错误令牌", text)
+        self.assertIn("过期预览", text)
+        self.assertIsNone(re.search(r"\b[0-9a-f]{64}\b", text))
+        self.assertIsNone(re.search(r"/(Users|home)/", text))
+        self.assertNotIn("approval-token", text)
+
+    def test_public_demo_evidence_png_is_1600_by_900(self):
+        image = (
+            REPO_ROOT / "docs" / "assets" / "video" / "08-public-demo-safety.png"
+        )
+        self.assertTrue(image.is_file(), "public demo evidence PNG is missing")
+        data = image.read_bytes()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(struct.unpack(">II", data[16:24]), (1600, 900))
 
 
 if __name__ == "__main__":

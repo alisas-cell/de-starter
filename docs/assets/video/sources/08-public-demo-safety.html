@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>De-starter public demo safety evidence</title>
+  <style>
+    :root { --ink:#13213c; --muted:#64718b; --paper:#f5f7fc; --panel:#fff; --line:#dbe3f0; --blue:#405bd8; --blue-soft:#edf1ff; --red:#c64b5a; --red-soft:#fff0f2; --green:#10856f; --green-soft:#e8f8f3; --amber:#a96619; --amber-soft:#fff4df; }
+    * { box-sizing:border-box; }
+    html,body { width:1600px; height:900px; margin:0; overflow:hidden; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    body { background-image:radial-gradient(circle at 10% 8%,rgba(64,91,216,.14),transparent 28%),radial-gradient(circle at 92% 88%,rgba(16,133,111,.12),transparent 28%),linear-gradient(rgba(64,91,216,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(64,91,216,.035) 1px,transparent 1px); background-size:auto,auto,40px 40px,40px 40px; }
+    main { height:100%; padding:42px 58px 34px; display:grid; grid-template-rows:auto 1fr auto; gap:22px; }
+    header { display:flex; justify-content:space-between; align-items:end; }
+    .eyebrow { color:var(--blue); font-size:14px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { margin:10px 0 0; font-family:Georgia,"Times New Roman",serif; font-size:50px; line-height:1.04; letter-spacing:-.04em; }
+    .risk { padding:12px 18px; border:1px solid #ecd4a9; border-radius:999px; background:var(--amber-soft); color:var(--amber); font-size:15px; font-weight:900; }
+    .grid { display:grid; grid-template-columns:1fr 1fr 1.12fr; gap:20px; min-height:0; }
+    .card { padding:26px; border:1px solid var(--line); border-radius:24px; background:rgba(255,255,255,.97); box-shadow:0 16px 45px rgba(39,52,91,.08); }
+    .card.reject { border-color:#efc5cb; background:linear-gradient(145deg,var(--red-soft),white 74%); }
+    .card.pass { border-color:#bce5da; background:linear-gradient(145deg,var(--green-soft),white 74%); }
+    .step { color:var(--muted); font-size:12px; font-weight:900; letter-spacing:.13em; text-transform:uppercase; }
+    .state { margin:18px 0 10px; font-family:Georgia,"Times New Roman",serif; font-size:40px; line-height:1; letter-spacing:-.035em; }
+    .reject .state { color:var(--red); } .pass .state { color:var(--green); }
+    .token { display:inline-block; margin:8px 0 16px; padding:8px 12px; border-radius:10px; background:#17213a; color:#fff; font:800 12px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.08em; }
+    .facts { display:grid; gap:10px; margin-top:18px; }
+    .fact { display:flex; gap:11px; align-items:flex-start; padding:12px 13px; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,.83); }
+    .icon { flex:0 0 25px; width:25px; height:25px; display:grid; place-items:center; border-radius:50%; color:white; background:var(--blue); font-size:12px; font-weight:900; }
+    .reject .icon { background:var(--red); } .pass .icon { background:var(--green); }
+    .fact strong { display:block; font-size:14px; line-height:1.25; } .fact span { display:block; margin-top:3px; color:var(--muted); font-size:12px; line-height:1.35; }
+    .protected { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:16px; }
+    .pill { padding:10px 7px; border-radius:12px; background:white; border:1px solid #bce5da; text-align:center; color:var(--green); font-size:11px; font-weight:900; }
+    footer { display:grid; grid-template-columns:1fr auto; align-items:center; gap:20px; padding:16px 20px; border:1px solid var(--line); border-radius:18px; background:rgba(255,255,255,.88); color:var(--muted); font-size:14px; }
+    footer strong { color:var(--ink); }
+    .boundary { color:var(--amber); font-weight:900; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><div class="eyebrow">Public synthetic demo · reproducible evidence</div><h1>两次拒绝，一次精确批准</h1></div>
+      <div class="risk">低风险不等于零风险</div>
+    </header>
+    <section class="grid">
+      <article class="card reject">
+        <div class="step">01 · 错误令牌</div>
+        <div class="state">REJECTED</div>
+        <div class="token">TOKEN · REDACTED</div>
+        <div class="facts">
+          <div class="fact"><span class="icon">×</span><div><strong>批准校验失败</strong><span>在 backup 与项目写入之前停止</span></div></div>
+          <div class="fact"><span class="icon">=</span><div><strong>Inventory 完全一致</strong><span>没有部分删除、替换或重命名</span></div></div>
+        </div>
+      </article>
+      <article class="card reject">
+        <div class="step">02 · 过期预览</div>
+        <div class="state">REJECTED</div>
+        <div class="token">OLD TOKEN · REDACTED</div>
+        <div class="facts">
+          <div class="fact"><span class="icon">!</span><div><strong>Preview 后状态变化</strong><span>旧批准自动失效</span></div></div>
+          <div class="fact"><span class="icon">0</span><div><strong>零部分获批修改</strong><span>Demo、资产、空目录全部仍在</span></div></div>
+        </div>
+      </article>
+      <article class="card pass">
+        <div class="step">03 · 当前精确批准</div>
+        <div class="state">SCOPED APPLY</div>
+        <div class="token">CURRENT TOKEN · REDACTED</div>
+        <div class="facts">
+          <div class="fact"><span class="icon">✓</span><div><strong>只处理获批 P2 / P3</strong><span>删除 Demo、重命名本地资产、中性化展示信息</span></div></div>
+          <div class="fact"><span class="icon">↺</span><div><strong>恢复证据在项目外</strong><span>backup · restore.json · reverse.diff</span></div></div>
+        </div>
+        <div class="protected"><div class="pill">P0 LICENSE 保留</div><div class="pill">P1 key 保留</div><div class="pill">普通空目录保留</div><div class="pill">目录 1 → 0</div></div>
+      </article>
+    </section>
+    <footer><span><strong>同一个已发布 CLI</strong> · 合成项目 · 错误令牌 → 过期预览 → 当前批准</span><span class="boundary">有事务回滚与恢复证据 · 没有一键恢复命令</span></footer>
+  </main>
+</body>
+</html>
