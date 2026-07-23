@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Two-gate safety workflow</title>
+  <title>两道审批门安全流程</title>
   <style>
     :root {
       --ink: #16213c;
@@ -286,49 +286,49 @@
   <main>
     <header>
       <div>
-        <div class="eyebrow">Controlled de-starter workflow</div>
-        <h1>Two gates. Zero blind writes.</h1>
+        <div class="eyebrow">受控的去 Starter 流程</div>
+        <h1>两道审批门，拒绝盲目写入。</h1>
       </div>
-      <p class="header-note">A preview can pass every check and still remain read-only until the exact change set is approved.</p>
+      <p class="header-note">即使预览通过全部检查，在精确变更集获批以前仍然只读。</p>
     </header>
 
     <section class="workflow" aria-label="Two approval gates">
       <article class="gate" data-number="1">
-        <div class="gate-tag">Gate 1 approved</div>
-        <h2>Approve the scope</h2>
-        <p>Choose what may be removed, renamed, migrated, or rewritten before a patch is prepared.</p>
+        <div class="gate-tag">第一道门 · 已批准</div>
+        <h2>先批准处理范围</h2>
+        <p>在准备补丁前，先决定哪些可以删除、重命名、迁移或改写。</p>
         <div class="scope-grid">
-          <div class="metric"><strong>4</strong><span>approved removals</span></div>
-          <div class="metric"><strong>2</strong><span>directory renames</span></div>
-          <div class="metric"><strong>14</strong><span>protected P1 migrations</span></div>
+          <div class="metric"><strong>4</strong><span>获批删除</span></div>
+          <div class="metric"><strong>2</strong><span>目录重命名</span></div>
+          <div class="metric"><strong>14</strong><span>受保护的 P1 迁移</span></div>
         </div>
         <div class="evidence">
-          <div class="evidence-row"><span>Protected content</span><strong>Kept</strong></div>
-          <div class="evidence-row"><span>Functional identifiers</span><strong>Reviewed</strong></div>
+          <div class="evidence-row"><span>受保护内容</span><strong>保留</strong></div>
+          <div class="evidence-row"><span>功能性标识</span><strong>已复核</strong></div>
         </div>
       </article>
 
       <article class="gate" data-number="2">
-        <div class="gate-tag">Gate 2 ready</div>
-        <h2>Approve the exact preview</h2>
-        <p>Inspect the full diff, verification report, and hash-bound approval token before any write.</p>
+        <div class="gate-tag">第二道门 · 等待批准</div>
+        <h2>再批准精确预览</h2>
+        <p>任何写入前，都要检查完整差异、验证报告和哈希绑定的批准令牌。</p>
         <div class="preview-grid">
-          <div class="metric"><strong>72</strong><span>changed paths</span></div>
-          <div class="metric"><strong>122</strong><span>semantic edits</span></div>
-          <div class="metric"><strong>76/76</strong><span>source hashes</span></div>
-          <div class="metric"><strong>72/72</strong><span>preview hashes</span></div>
+          <div class="metric"><strong>72</strong><span>变更路径</span></div>
+          <div class="metric"><strong>122</strong><span>语义编辑</span></div>
+          <div class="metric"><strong>76/76</strong><span>源文件哈希</span></div>
+          <div class="metric"><strong>72/72</strong><span>预览哈希</span></div>
         </div>
         <div class="evidence">
-          <div class="evidence-row"><span>Lint · build</span><strong>Pass</strong></div>
-          <div class="evidence-row"><span>New test failures</span><strong>0</strong></div>
+          <div class="evidence-row"><span>代码检查 · 构建</span><strong>通过</strong></div>
+          <div class="evidence-row"><span>新增测试失败</span><strong>0</strong></div>
         </div>
       </article>
     </section>
 
     <footer>
-      <div class="stop"><span class="stop-icon">■</span><span>Stopped before apply · exact approval required</span></div>
-      <div class="proof"><span>Source tree unchanged</span><strong>350 / 350</strong></div>
-      <div class="proof"><span>Inventory delta</span><strong>+0 · −0 · Δ0</strong></div>
+      <div class="stop"><span class="stop-icon">■</span><span>执行前暂停 · 必须精确批准</span></div>
+      <div class="proof"><span>源项目保持不变</span><strong>350 / 350</strong></div>
+      <div class="proof"><span>清点数量变化</span><strong>+0 · −0 · Δ0</strong></div>
     </footer>
   </main>
 </body>

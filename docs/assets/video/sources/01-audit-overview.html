@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Read-only audit overview</title>
+  <title>只读审计总览</title>
   <style>
     :root {
       --ink: #17203b;
@@ -289,41 +289,41 @@
   </style>
 </head>
 <body>
-  <main aria-label="Sanitized read-only audit summary">
+  <main aria-label="脱敏只读审计摘要">
     <section class="intro">
       <div>
-        <div class="eyebrow">Read-only audit</div>
-        <h1>See the residue.<br />Protect the product.</h1>
-        <p class="lede">A complete inventory is classified before any project byte can change.</p>
+        <div class="eyebrow">第一步 · 只读审计</div>
+        <h1>先看清残留，<br />再保护产品。</h1>
+        <p class="lede">完整清点并分级之后，项目里的任何字节才有可能被修改。</p>
       </div>
-      <div class="inventory" aria-label="Aggregate inventory counts">
-        <div class="metric"><strong>350</strong><span>files inventoried</span></div>
-        <div class="metric"><strong>523</strong><span>findings classified</span></div>
+      <div class="inventory" aria-label="聚合清点数量">
+        <div class="metric"><strong>350</strong><span>已清点文件</span></div>
+        <div class="metric"><strong>523</strong><span>已分级发现项</span></div>
       </div>
     </section>
 
     <section class="evidence">
       <div class="evidence-header">
-        <h2>Immutability evidence</h2>
-        <div class="status">Source tree unchanged</div>
+        <h2>只读证据</h2>
+        <div class="status">源项目保持不变</div>
       </div>
 
-      <div class="zero-diff" aria-label="Inventory comparison">
-        <div class="zero-cell"><strong>0</strong><span>added</span></div>
-        <div class="zero-cell"><strong>0</strong><span>removed</span></div>
-        <div class="zero-cell"><strong>0</strong><span>changed</span></div>
+      <div class="zero-diff" aria-label="项目清点对比">
+        <div class="zero-cell"><strong>0</strong><span>新增</span></div>
+        <div class="zero-cell"><strong>0</strong><span>移除</span></div>
+        <div class="zero-cell"><strong>0</strong><span>改动</span></div>
       </div>
 
       <div class="risk-grid" aria-label="Risk classification counts">
-        <article class="risk p0" data-risk="P0"><span class="label">Protected</span><strong>132</strong><p>Legal and secret-sensitive signals stay untouched.</p></article>
-        <article class="risk p1" data-risk="P1"><span class="label">High risk</span><strong>52</strong><p>Identifiers wait for migration and rollback plans.</p></article>
-        <article class="risk p2" data-risk="P2"><span class="label">User decision</span><strong>52</strong><p>Samples and demos require an explicit choice.</p></article>
-        <article class="risk p3" data-risk="P3"><span class="label">Display residue</span><strong>287</strong><p>Neutral replacements can enter a private preview.</p></article>
+        <article class="risk p0" data-risk="P0"><span class="label">受保护</span><strong>132</strong><p>法律与疑似敏感证据保持不变。</p></article>
+        <article class="risk p1" data-risk="P1"><span class="label">高风险</span><strong>52</strong><p>标识迁移前必须准备迁移与回滚方案。</p></article>
+        <article class="risk p2" data-risk="P2"><span class="label">用户决定</span><strong>52</strong><p>样例与演示需要用户明确选择。</p></article>
+        <article class="risk p3" data-risk="P3"><span class="label">展示残留</span><strong>287</strong><p>中性替换可以进入项目外预览。</p></article>
       </div>
 
       <div class="gate">
-        <b>Gate one: scope recommended</b>
-        <span>Awaiting explicit approval before preview</span>
+        <b>第一道门：已提出范围建议</b>
+        <span>生成预览前，等待用户明确批准</span>
       </div>
     </section>
   </main>

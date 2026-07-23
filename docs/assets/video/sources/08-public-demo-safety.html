@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>De-starter public demo safety evidence</title>
+  <title>De-starter 公开合成演示安全证据</title>
   <style>
     :root { --ink:#13213c; --muted:#64718b; --paper:#f5f7fc; --panel:#fff; --line:#dbe3f0; --blue:#405bd8; --blue-soft:#edf1ff; --red:#c64b5a; --red-soft:#fff0f2; --green:#10856f; --green-soft:#e8f8f3; --amber:#a96619; --amber-soft:#fff4df; }
     * { box-sizing:border-box; }
@@ -37,40 +37,40 @@
 <body>
   <main>
     <header>
-      <div><div class="eyebrow">Public synthetic demo · reproducible evidence</div><h1>两次拒绝，一次精确批准</h1></div>
+      <div><div class="eyebrow">公开合成演示 · 可复现证据</div><h1>两次拒绝，一次精确批准</h1></div>
       <div class="risk">低风险不等于零风险</div>
     </header>
     <section class="grid">
       <article class="card reject">
         <div class="step">01 · 错误令牌</div>
-        <div class="state">REJECTED</div>
-        <div class="token">TOKEN · REDACTED</div>
+        <div class="state">已拒绝</div>
+        <div class="token">令牌 · 已隐藏</div>
         <div class="facts">
-          <div class="fact"><span class="icon">×</span><div><strong>批准校验失败</strong><span>在 backup 与项目写入之前停止</span></div></div>
-          <div class="fact"><span class="icon">=</span><div><strong>Inventory 完全一致</strong><span>没有部分删除、替换或重命名</span></div></div>
+          <div class="fact"><span class="icon">×</span><div><strong>批准校验失败</strong><span>在创建备份与项目写入之前停止</span></div></div>
+          <div class="fact"><span class="icon">=</span><div><strong>项目清点完全一致</strong><span>没有部分删除、替换或重命名</span></div></div>
         </div>
       </article>
       <article class="card reject">
         <div class="step">02 · 过期预览</div>
-        <div class="state">REJECTED</div>
-        <div class="token">OLD TOKEN · REDACTED</div>
+        <div class="state">已拒绝</div>
+        <div class="token">旧令牌 · 已隐藏</div>
         <div class="facts">
-          <div class="fact"><span class="icon">!</span><div><strong>Preview 后状态变化</strong><span>旧批准自动失效</span></div></div>
-          <div class="fact"><span class="icon">0</span><div><strong>零部分获批修改</strong><span>Demo、资产、空目录全部仍在</span></div></div>
+          <div class="fact"><span class="icon">!</span><div><strong>预览后状态变化</strong><span>旧批准自动失效</span></div></div>
+          <div class="fact"><span class="icon">0</span><div><strong>零部分获批修改</strong><span>演示、资产、空目录全部仍在</span></div></div>
         </div>
       </article>
       <article class="card pass">
         <div class="step">03 · 当前精确批准</div>
-        <div class="state">SCOPED APPLY</div>
-        <div class="token">CURRENT TOKEN · REDACTED</div>
+        <div class="state">按范围执行</div>
+        <div class="token">当前令牌 · 已隐藏</div>
         <div class="facts">
-          <div class="fact"><span class="icon">✓</span><div><strong>只处理获批 P2 / P3</strong><span>删除 Demo、重命名本地资产、中性化展示信息</span></div></div>
-          <div class="fact"><span class="icon">↺</span><div><strong>恢复证据在项目外</strong><span>backup · restore.json · reverse.diff</span></div></div>
+          <div class="fact"><span class="icon">✓</span><div><strong>只处理获批 P2 / P3</strong><span>删除演示、重命名本地资产、中性化展示信息</span></div></div>
+          <div class="fact"><span class="icon">↺</span><div><strong>恢复证据在项目外</strong><span>备份 · 恢复清单 · 反向差异</span></div></div>
         </div>
-        <div class="protected"><div class="pill">P0 LICENSE 保留</div><div class="pill">P1 key 保留</div><div class="pill">普通空目录保留</div><div class="pill">目录 1 → 0</div></div>
+        <div class="protected"><div class="pill">P0 许可证保留</div><div class="pill">P1 功能键保留</div><div class="pill">普通空目录保留</div><div class="pill">目录 1 → 0</div></div>
       </article>
     </section>
-    <footer><span><strong>同一个已发布 CLI</strong> · 合成项目 · 错误令牌 → 过期预览 → 当前批准</span><span class="boundary">有事务回滚与恢复证据 · 没有一键恢复命令</span></footer>
+    <footer><span><strong>同一个已发布命令行工具</strong> · 合成项目 · 错误令牌 → 过期预览 → 当前批准</span><span class="boundary">有事务回滚与恢复证据 · 没有一键恢复命令</span></footer>
   </main>
 </body>
 </html>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>De-starter public release CI verification</title>
+  <title>De-starter 公开发布持续集成验证</title>
   <style>
     :root { --ink:#17213a; --muted:#69738a; --paper:#f5f7fd; --panel:rgba(255,255,255,.97); --line:#dce3f1; --violet:#6153d8; --violet-soft:#efedff; --teal:#11898b; --teal-soft:#e2f7f3; --red:#b64a57; --red-soft:#fff0f1; --amber:#ad681f; --amber-soft:#fff3df; }
     * { box-sizing:border-box; }
@@ -42,16 +42,16 @@
   <main>
     <header>
       <div>
-        <div class="eyebrow">Public release verification · reconstructed evidence card</div>
+        <div class="eyebrow">公开发布验证 · 基于公开数据重绘</div>
         <h1>本地全绿，不等于公开发布已经完成</h1>
       </div>
-      <div class="badge">v0.1.1 · Latest · tag CI passed</div>
+      <div class="badge">当前 v0.1.2 · 三档持续集成通过</div>
     </header>
     <section class="flow">
       <article class="card">
-        <div class="step">01 · macOS local</div>
-        <div class="state">195 / 195</div>
-        <div class="summary">严格 ResourceWarning 模式通过；CLI 13 / 13，Skill 结构、编译与隐私检查通过。</div>
+        <div class="step">01 · macOS 本地验证</div>
+        <div class="state">214 / 214</div>
+        <div class="summary">当前 v0.1.2 完整回归通过；技能结构、编译与隐私检查通过。</div>
         <div class="facts">
           <div class="fact"><span class="dot">✓</span><div><strong>真实 Starter 验收完成</strong><span>文件 523 → 227；目录 1 → 0</span></div></div>
           <div class="fact"><span class="dot">✓</span><div><strong>公开仓库干净克隆通过</strong><span>安装副本与完整测试再次通过</span></div></div>
@@ -59,28 +59,28 @@
       </article>
       <div class="arrow">→</div>
       <article class="card fail">
-        <div class="step">02 · first Linux CI</div>
-        <div class="state red">1 failure</div>
-        <div class="summary">生产逻辑没有失败；失败来自测试假设：同一路径重新创建后，inode 被认为一定会变化。</div>
+        <div class="step">02 · 历史首次 Linux 验证</div>
+        <div class="state red">1 项失败</div>
+        <div class="summary">生产逻辑没有失败；失败来自测试假设：同一路径重建后，文件身份编号被认为一定会变化。</div>
         <div class="facts">
-          <div class="fact"><span class="dot">!</span><div><strong>Ubuntu 可立即复用 inode</strong><span>完全相同的 token 合法地保持相同</span></div></div>
+          <div class="fact"><span class="dot">!</span><div><strong>Ubuntu 可立即复用文件身份编号</strong><span>完全相同的批准令牌可以合法保持相同</span></div></div>
           <div class="fact"><span class="dot">↺</span><div><strong>不掩盖、不重跑碰运气</strong><span>读日志 → 追根因 → 最小可移植修复</span></div></div>
         </div>
       </article>
       <div class="arrow">→</div>
       <article class="card pass">
-        <div class="step">03 · v0.1.1 tag CI</div>
-        <div class="state green">3 / 3 PASS</div>
-        <div class="summary">Python 三档矩阵与标签构建全部成功；Node 24 官方 Action，Annotations 为空。</div>
+        <div class="step">03 · 当前 v0.1.2 标签验证</div>
+        <div class="state green">3 / 3 通过</div>
+        <div class="summary">Python 三档矩阵与标签构建全部成功；官方 Node 24 工作流，错误标注为空。</div>
         <div class="jobs">
-          <div class="job"><b>✓</b><span>PYTHON 3.9</span></div>
-          <div class="job"><b>✓</b><span>PYTHON 3.11</span></div>
-          <div class="job"><b>✓</b><span>PYTHON 3.13</span></div>
+          <div class="job"><b>✓</b><span>Python 3.9</span></div>
+          <div class="job"><b>✓</b><span>Python 3.11</span></div>
+          <div class="job"><b>✓</b><span>Python 3.13</span></div>
         </div>
-        <div class="commit">Latest tag · v0.1.1 · commit 437d3d6</div>
+        <div class="commit">最新标签 · v0.1.2 · 提交 65b99eb</div>
       </article>
     </section>
-    <footer><span><strong>De-starter</strong> · local evidence → public CI → patch release</span><span>基于已验证 GitHub 数据重绘 · 非原始网页截图</span></footer>
+    <footer><span><strong>De-starter</strong> · 本地证据 → 公开持续集成 → 补丁发布</span><span>基于公开 GitHub 数据重绘 · 非原始网页截图</span></footer>
   </main>
 </body>
 </html>

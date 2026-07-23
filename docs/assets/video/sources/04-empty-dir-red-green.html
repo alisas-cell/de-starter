@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>De-starter empty directory TDD evidence</title>
+  <title>De-starter 空目录测试驱动证据</title>
   <style>
     :root {
       --ink:#18213b; --muted:#69738a; --paper:#f5f7fd; --panel:rgba(255,255,255,.96);
@@ -50,28 +50,28 @@
   <main>
     <header>
       <div>
-        <div class="eyebrow">TDD + independent review</div>
+        <div class="eyebrow">测试驱动开发 + 独立复核</div>
         <h1>测试全绿，不等于已经足够安全</h1>
       </div>
       <p class="header-note">通用 Skill 的目录审计能力<br />只展示合成测试与公开安全结果</p>
     </header>
     <section class="stages">
       <article class="stage red">
-        <div class="top"><span class="badge">RED</span><span class="step">01 · 能力缺失</span></div>
-        <div class="metric">ImportError</div>
+        <div class="top"><span class="badge">红灯</span><span class="step">01 · 能力缺失</span></div>
+        <div class="metric">导入错误</div>
         <div class="label">旧运行时没有目录清点接口</div>
         <h2>空目录对文件扫描器不可见</h2>
         <p>合成路径 <code>public/starter/</code> 无法进入审计，所以也不能进入审批、预览和回滚。</p>
       </article>
       <article class="stage review">
-        <div class="top"><span class="badge">REVIEW</span><span class="step">02 · 测试后复核</span></div>
+        <div class="top"><span class="badge">复核</span><span class="step">02 · 测试后复核</span></div>
         <div class="metric">126 / 126</div>
         <div class="label">测试通过，但独立审查没有放行</div>
         <h2>发现竞态与权限边界</h2>
         <p>审查要求补上并发新增、符号链接替换、敏感目录不透明处理和特殊权限往返测试。</p>
       </article>
       <article class="stage green">
-        <div class="top"><span class="badge">GREEN</span><span class="step">03 · 加固完成</span></div>
+        <div class="top"><span class="badge">绿灯</span><span class="step">03 · 加固完成</span></div>
         <div class="metric">130 / 130</div>
         <div class="label">完整测试通过 · 复审零问题</div>
         <h2>描述符锚定的稳定快照</h2>
@@ -79,9 +79,9 @@
       </article>
     </section>
     <footer class="proofs">
-      <div class="proof"><span class="icon">✓</span><div><strong>真实 RED 证据</strong><span>先证明旧能力缺失，再写实现</span></div></div>
-      <div class="proof"><span class="icon">↺</span><div><strong>审查驱动新测试</strong><span>Critical / Important 全部转成回归用例</span></div></div>
-      <div class="proof"><span class="icon">0</span><div><strong>独立复审通过</strong><span>Critical 0 · Important 0 · Minor 0</span></div></div>
+      <div class="proof"><span class="icon">✓</span><div><strong>真实红灯证据</strong><span>先证明旧能力缺失，再写实现</span></div></div>
+      <div class="proof"><span class="icon">↺</span><div><strong>审查驱动新测试</strong><span>严重与重要问题全部转成回归用例</span></div></div>
+      <div class="proof"><span class="icon">0</span><div><strong>独立复审通过</strong><span>严重 0 · 重要 0 · 轻微 0</span></div></div>
     </footer>
   </main>
 </body>
