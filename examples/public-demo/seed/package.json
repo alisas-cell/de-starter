@@ -1,0 +1,14 @@
+{
+  "name": "northstar-starter",
+  "author": "Northstar Labs",
+  "repository": "https://github.com/northstar-labs/northstar-starter",
+  "private": true,
+  "dependencies": {
+    "next": "16.0.0"
+  },
+  "scripts": {
+    "lint": "node --check app/page.tsx",
+    "test": "node --test",
+    "build": "next build"
+  }
+}

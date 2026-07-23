@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Create and inspect a sentinel-owned synthetic de-starter demo workspace."""
+
+from pathlib import Path
+from typing import Dict, Sequence
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import sys
+
+
+DEMO_DIR = Path(__file__).resolve().parent
+REPO_ROOT = DEMO_DIR.parents[1]
+SEED = DEMO_DIR / "seed"
+SENTINEL = ".de-starter-public-demo.json"
+SENTINEL_PAYLOAD = {"kind": "de-starter-public-demo", "version": 1}
+BASELINE = "baseline-inventory.json"
+
+
+def _safe_workspace_path(workspace: Path) -> Path:
+    original = workspace.expanduser()
+    if original.is_symlink():
+        raise ValueError("refusing a symlink workspace")
+    root = original.resolve()
+    if root == Path(root.anchor):
+        raise ValueError("refusing the filesystem root")
+    if root == Path.home().resolve():
+        raise ValueError("refusing the home directory")
+    if root == REPO_ROOT:
+        raise ValueError("refusing the repository root")
+    return root
+
+
+def _atomic_json(path: Path, payload: object) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    if temporary.exists():
+        raise ValueError("temporary demo artifact already exists: " + str(temporary))
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(temporary), str(path))
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def require_owned_workspace(workspace: Path) -> Dict[str, Path]:
+    root = _safe_workspace_path(workspace)
+    marker = root / SENTINEL
+    if not marker.is_file() or marker.is_symlink():
+        raise ValueError("public demo sentinel is missing")
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("public demo sentinel is invalid") from exc
+    if payload != SENTINEL_PAYLOAD:
+        raise ValueError("public demo sentinel is invalid")
+    project = root / "project"
+    run_dir = root / "run"
+    if project.parent != root or run_dir.parent != root:
+        raise ValueError("public demo child boundary is invalid")
+    if not project.is_dir() or project.is_symlink():
+        raise ValueError("public demo project is missing or unsafe")
+    if not run_dir.is_dir() or run_dir.is_symlink():
+        raise ValueError("public demo run directory is missing or unsafe")
+    return {"workspace": root, "project": project, "run_dir": run_dir}
+
+
+def inventory_project(workspace: Path) -> dict:
+    owned = require_owned_workspace(workspace)
+    project = owned["project"]
+    files = {}
+    directories = []
+    for path in sorted(project.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("public demo project contains a symlink")
+        relative = path.relative_to(project).as_posix()
+        if path.is_file():
+            files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+        elif path.is_dir():
+            directories.append(relative)
+        else:
+            raise ValueError("public demo project contains an unsupported entry")
+    return {"files": files, "directories": directories}
+
+
+def prepare_workspace(workspace: Path) -> dict:
+    root = _safe_workspace_path(workspace)
+    if root.exists():
+        if not root.is_dir() or root.is_symlink():
+            raise ValueError("demo workspace must be an empty directory")
+        if any(root.iterdir()):
+            raise ValueError("demo workspace must be empty or already owned")
+    else:
+        root.mkdir(parents=True)
+
+    project = root / "project"
+    run_dir = root / "run"
+    try:
+        shutil.copytree(SEED, project, symlinks=False)
+        run_dir.mkdir()
+        (project / "public" / "starter").mkdir()
+        (project / "public" / "uploads").mkdir()
+        _atomic_json(root / SENTINEL, SENTINEL_PAYLOAD)
+        baseline = inventory_project(root)
+        _atomic_json(root / BASELINE, baseline)
+    except BaseException:
+        if root.exists() and not any(root.iterdir()):
+            root.rmdir()
+        raise
+    return {
+        "workspace": str(root),
+        "project": str(project),
+        "run_dir": str(run_dir),
+        "baseline_inventory": str(root / BASELINE),
+    }
+
+
+def reset_workspace(workspace: Path) -> None:
+    owned = require_owned_workspace(workspace)
+    root = owned["workspace"]
+    if owned["project"] != root / "project" or owned["run_dir"] != root / "run":
+        raise ValueError("public demo child boundary is invalid")
+    shutil.rmtree(root)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Manage a disposable, synthetic de-starter public demo workspace."
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("prepare", "inventory", "reset"):
+        child = subparsers.add_parser(command)
+        child.add_argument("--workspace", type=Path, required=True)
+    return parser
+
+
+def main(argv: Sequence[str] = ()) -> int:
+    args = _parser().parse_args(list(argv) if argv else None)
+    try:
+        if args.command == "prepare":
+            payload = prepare_workspace(args.workspace)
+        elif args.command == "inventory":
+            payload = inventory_project(args.workspace)
+        else:
+            reset_workspace(args.workspace)
+            payload = {"status": "reset", "workspace": str(args.workspace)}
+    except (OSError, ValueError) as exc:
+        print("error: " + str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
