@@ -1,0 +1,61 @@
+{
+  "brand_mode": "placeholder",
+  "brand_profile": {},
+  "actions": [
+    {
+      "finding_id": "F-9d455afe02b1",
+      "action": "replace",
+      "replacement": "Your Product"
+    },
+    {
+      "finding_id": "F-c97ec6f2d335",
+      "action": "replace",
+      "replacement": "Your Product"
+    },
+    {
+      "finding_id": "F-f4271288b5ee",
+      "action": "replace",
+      "replacement": "support@example.com"
+    },
+    {
+      "finding_id": "F-c911c2533a25",
+      "action": "replace",
+      "replacement": "your-product"
+    },
+    {
+      "finding_id": "F-1c2410f9117c",
+      "action": "replace",
+      "replacement": "Your Company"
+    },
+    {
+      "finding_id": "F-3042a1cfe5ae",
+      "action": "replace",
+      "replacement": "your-org"
+    },
+    {
+      "finding_id": "F-d54b5ceb9be4",
+      "action": "replace",
+      "replacement": "your-product"
+    },
+    {
+      "finding_id": "F-544804c40ed2",
+      "action": "replace",
+      "replacement": "Your Product"
+    },
+    {
+      "finding_id": "F-3b37811cb2e6",
+      "action": "replace",
+      "replacement": "Your Product"
+    }
+  ],
+  "delete_paths": [
+    "app/demo"
+  ],
+  "rename_paths": {
+    "public/starter-logo.svg": "public/product-logo.svg"
+  },
+  "text_edits": [],
+  "cleanup_empty_dirs": [
+    "public/starter"
+  ]
+}

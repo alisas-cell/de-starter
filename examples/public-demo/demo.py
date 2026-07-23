@@ -129,12 +129,56 @@ def reset_workspace(workspace: Path) -> None:
     shutil.rmtree(root)
 
 
+def check_applied(workspace: Path) -> dict:
+    owned = require_owned_workspace(workspace)
+    project = owned["project"]
+    run_dir = owned["run_dir"]
+    errors = []
+    if (project / "LICENSE").read_bytes() != (SEED / "LICENSE").read_bytes():
+        errors.append("LICENSE changed")
+    try:
+        messages = json.loads(
+            (project / "messages" / "en.json").read_text(encoding="utf-8")
+        )
+        package = json.loads((project / "package.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("could not read applied demo files") from exc
+    if messages.get("plan") != "starter_monthly":
+        errors.append("retained P1 plan key changed")
+    if messages.get("brand") != "Your Product":
+        errors.append("neutral product placeholder is missing")
+    if messages.get("support") != "support@example.com":
+        errors.append("neutral support placeholder is missing")
+    if package.get("name") != "your-product":
+        errors.append("neutral package name is missing")
+    if package.get("author") != "Your Company":
+        errors.append("neutral owner placeholder is missing")
+    if package.get("repository") != "https://github.com/your-org/your-product":
+        errors.append("neutral repository placeholder is missing")
+    if (project / "app" / "demo").exists():
+        errors.append("approved P2 demo path remains")
+    if (project / "public" / "starter").exists():
+        errors.append("approved source-named empty directory remains")
+    if not (project / "public" / "uploads").is_dir():
+        errors.append("ordinary empty directory was removed")
+    if (project / "public" / "starter-logo.svg").exists():
+        errors.append("approved source-named asset path remains")
+    if not (project / "public" / "product-logo.svg").is_file():
+        errors.append("renamed product asset is missing")
+    for artifact in ("backup", "restore.json", "reverse.diff", "apply-result.json"):
+        if not (run_dir / artifact).exists():
+            errors.append("missing external recovery artifact: " + artifact)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return {"status": "approved-scope-verified", "checks": 12}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage a disposable, synthetic de-starter public demo workspace."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("prepare", "inventory", "reset"):
+    for command in ("prepare", "inventory", "check", "reset"):
         child = subparsers.add_parser(command)
         child.add_argument("--workspace", type=Path, required=True)
     return parser
@@ -147,6 +191,8 @@ def main(argv: Sequence[str] = ()) -> int:
             payload = prepare_workspace(args.workspace)
         elif args.command == "inventory":
             payload = inventory_project(args.workspace)
+        elif args.command == "check":
+            payload = check_applied(args.workspace)
         else:
             reset_workspace(args.workspace)
             payload = {"status": "reset", "workspace": str(args.workspace)}
