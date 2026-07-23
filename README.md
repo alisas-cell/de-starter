@@ -4,6 +4,17 @@
 
 The real workspace stays read-only until the user reviews and explicitly approves the current preview diff.
 
+## Quick links
+
+- [Install](#install)
+- [Five-minute synthetic public demo](examples/public-demo/README.md)
+- [Sanitized real Starter experiment report（中文）](docs/real-starter-experiment-report.zh-CN.md)
+- [Chinese video director script](docs/video-director-script.zh-CN.md)
+- [Open a privacy-safe issue or feedback report](https://github.com/alisas-cell/de-starter/issues/new/choose)
+- [Latest release: v0.1.2](https://github.com/alisas-cell/de-starter/releases/tag/v0.1.2)
+
+Risk is reduced, not zero. Review both approval gates, use Git or a verified backup, keep the external run directory, and validate after apply. An explicitly approved wrong decision can still produce an unwanted change.
+
 ## Install
 
 Requirements: Python 3.9+; runtime scripts use only the standard library. v0.1 automated commands require macOS/Linux POSIX no-follow support; `apply` additionally requires the project and run directory to be on the same filesystem. Windows is not supported in v0.1.
@@ -56,10 +67,13 @@ python3 -m compileall -q skills/de-starter/scripts
 
 Current public verification: 214/214 full regression tests, including 19 public-demo workspace, lifecycle, refusal, documentation, media, privacy, and reset-boundary checks; 13/13 core CLI lifecycle tests; and a five-sample fresh-context pressure scenario improving from baseline 0/5 to final 5/5.
 
+`v0.1.2` adds the synthetic public lab, refusal evidence, documentation, media, and tests. Production Skill behavior is unchanged from `v0.1.1`.
+
 ## Public evidence
 
 - [Sanitized real-run acceptance summary](examples/sanitized-real-run-summary.md)
 - [真实 Starter 实验报告（中文）](docs/real-starter-experiment-report.zh-CN.md)
+- [中文视频导演稿](docs/video-director-script.zh-CN.md)
 - [视频镜头清单（中文）](docs/video-shot-list.zh-CN.md)
 - [自媒体发布完整包（中文）](docs/self-media-package.zh-CN.md)
 

@@ -31,3 +31,7 @@ Describe:
 6. any change to approval, backup, rollback, or platform guarantees.
 
 Security-sensitive changes should include deterministic failure injection or race coverage. Do not weaken fail-closed behavior to make a fixture pass.
+
+## Feedback without a code change
+
+Use the [Feedback Issue Form](https://github.com/alisas-cell/de-starter/issues/new/choose). Describe the project category and stage, but replace all real identities, paths, source excerpts, tokens, credentials, and backup mappings with synthetic values.

@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: 使用反馈 / Feedback
+    url: https://github.com/alisas-cell/de-starter/issues/new?template=feedback.yml
+    about: Share a privacy-safe experience or improvement request using synthetic evidence only.
   - name: Sensitive security report
     url: https://github.com/alisas-cell/de-starter/security/advisories/new
     about: Report vulnerabilities privately; never include purchased code, credentials, or approval tokens in a public issue.

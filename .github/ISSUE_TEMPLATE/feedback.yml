@@ -1,0 +1,59 @@
+name: 使用反馈 / Feedback
+description: 分享隐私安全的使用体验、理解障碍或改进建议
+title: "[Feedback]: "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你的反馈。请只使用完全合成的示例，不要提交购买的 Starter 源码、真实项目身份、私有 diff、绝对路径、凭据、backup 映射或 approval token。
+  - type: dropdown
+    id: project_type
+    attributes:
+      label: 项目类型
+      options:
+        - SaaS Starter
+        - 前端或全栈模板
+        - Boilerplate 或克隆项目
+        - 课程或示例代码
+        - 其他合成复现
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 使用阶段
+      options:
+        - 安装或触发 Skill
+        - discover / audit
+        - 第一道范围审批
+        - Preview / 第二道精确审批
+        - Apply / Verify
+        - backup / rollback evidence
+        - 文档或公开演示
+    validations:
+      required: true
+  - type: textarea
+    id: difficulty
+    attributes:
+      label: 哪一步难以理解或使用？
+    validations:
+      required: true
+  - type: textarea
+    id: improvement
+    attributes:
+      label: 你希望怎样改进？
+    validations:
+      required: true
+  - type: textarea
+    id: synthetic_example
+    attributes:
+      label: 可选的完全合成示例
+      description: 使用虚构名称、虚构路径和虚构内容；不要粘贴真实项目材料。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我没有提交购买的 Starter 源码、真实身份、私有路径、凭据、完整 diff、backup 映射或 approval token。
+          required: true
