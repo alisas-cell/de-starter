@@ -47,7 +47,11 @@ class PublicDemoWorkspaceTests(unittest.TestCase):
             )
             self.assertEqual(
                 sentinel,
-                {"kind": "de-starter-public-demo", "version": 1},
+                {
+                    "kind": "de-starter-public-demo",
+                    "version": 1,
+                    "workspace": str(workspace.resolve()),
+                },
             )
 
     def test_prepare_refuses_nonempty_unowned_destination(self):
@@ -93,6 +97,40 @@ class PublicDemoWorkspaceTests(unittest.TestCase):
 
             self.assertFalse(workspace.exists())
             self.assertTrue(sibling.is_dir())
+
+    def test_reset_refuses_a_sentinel_copied_to_another_workspace(self):
+        demo = load_demo()
+        with TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            original = parent / "original"
+            copied = parent / "copied"
+            demo.prepare_workspace(original)
+            shutil.copytree(original, copied)
+
+            with self.assertRaisesRegex(ValueError, "identity|workspace"):
+                demo.reset_workspace(copied)
+
+            self.assertTrue(original.is_dir())
+            self.assertTrue(copied.is_dir())
+
+    def test_reset_refuses_an_unknown_top_level_entry(self):
+        demo = load_demo()
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "lab"
+            demo.prepare_workspace(workspace)
+            foreign = workspace / "foreign.txt"
+            foreign.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unexpected"):
+                demo.reset_workspace(workspace)
+
+            self.assertTrue(workspace.is_dir())
+            self.assertEqual(foreign.read_text(encoding="utf-8"), "keep\n")
+
+    def test_prepare_refuses_a_workspace_inside_the_repository(self):
+        demo = load_demo()
+        with self.assertRaisesRegex(ValueError, "inside the repository"):
+            demo._safe_workspace_path(REPO_ROOT / "would-be-public-demo")
 
     def test_inventory_is_stable_and_contains_only_project_relative_paths(self):
         self.assertTrue(DEMO_PATH.is_file(), "public demo helper is missing")

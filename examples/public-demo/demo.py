@@ -15,8 +15,16 @@ DEMO_DIR = Path(__file__).resolve().parent
 REPO_ROOT = DEMO_DIR.parents[1]
 SEED = DEMO_DIR / "seed"
 SENTINEL = ".de-starter-public-demo.json"
-SENTINEL_PAYLOAD = {"kind": "de-starter-public-demo", "version": 1}
 BASELINE = "baseline-inventory.json"
+_OWNED_TOP_LEVEL = {SENTINEL, BASELINE, "project", "run"}
+
+
+def _sentinel_payload(workspace: Path) -> dict:
+    return {
+        "kind": "de-starter-public-demo",
+        "version": 1,
+        "workspace": str(workspace),
+    }
 
 
 def _safe_workspace_path(workspace: Path) -> Path:
@@ -28,8 +36,8 @@ def _safe_workspace_path(workspace: Path) -> Path:
         raise ValueError("refusing the filesystem root")
     if root == Path.home().resolve():
         raise ValueError("refusing the home directory")
-    if root == REPO_ROOT:
-        raise ValueError("refusing the repository root")
+    if root == REPO_ROOT or REPO_ROOT in root.parents:
+        raise ValueError("refusing a workspace inside the repository")
     return root
 
 
@@ -58,8 +66,8 @@ def require_owned_workspace(workspace: Path) -> Dict[str, Path]:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("public demo sentinel is invalid") from exc
-    if payload != SENTINEL_PAYLOAD:
-        raise ValueError("public demo sentinel is invalid")
+    if payload != _sentinel_payload(root):
+        raise ValueError("public demo sentinel workspace identity is invalid")
     project = root / "project"
     run_dir = root / "run"
     if project.parent != root or run_dir.parent != root:
@@ -106,7 +114,7 @@ def prepare_workspace(workspace: Path) -> dict:
         run_dir.mkdir()
         (project / "public" / "starter").mkdir()
         (project / "public" / "uploads").mkdir()
-        _atomic_json(root / SENTINEL, SENTINEL_PAYLOAD)
+        _atomic_json(root / SENTINEL, _sentinel_payload(root))
         baseline = inventory_project(root)
         _atomic_json(root / BASELINE, baseline)
     except BaseException:
@@ -126,6 +134,12 @@ def reset_workspace(workspace: Path) -> None:
     root = owned["workspace"]
     if owned["project"] != root / "project" or owned["run_dir"] != root / "run":
         raise ValueError("public demo child boundary is invalid")
+    baseline = root / BASELINE
+    if not baseline.is_file() or baseline.is_symlink():
+        raise ValueError("public demo baseline inventory is missing or unsafe")
+    unexpected = sorted(path.name for path in root.iterdir() if path.name not in _OWNED_TOP_LEVEL)
+    if unexpected:
+        raise ValueError("unexpected public demo top-level entries: " + ", ".join(unexpected))
     shutil.rmtree(root)
 
 
