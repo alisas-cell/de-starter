@@ -9,12 +9,12 @@ The real workspace stays read-only until the user reviews and explicitly approve
 Requirements: Python 3.9+; runtime scripts use only the standard library. v0.1 automated commands require macOS/Linux POSIX no-follow support; `apply` additionally requires the project and run directory to be on the same filesystem. Windows is not supported in v0.1.
 
 ```bash
-git clone https://github.com/YOUR_ACCOUNT/de-starter.git
+git clone https://github.com/alisas-cell/de-starter.git
 mkdir -p "$HOME/.agents/skills"
 cp -R de-starter/skills/de-starter "$HOME/.agents/skills/de-starter"
 ```
 
-Replace `YOUR_ACCOUNT` with the repository owner after publication.
+The public repository is maintained at `alisas-cell/de-starter`.
 
 ## Use
 

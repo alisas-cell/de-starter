@@ -2366,12 +2366,12 @@ The real workspace stays read-only until the user reviews and explicitly approve
 Requirements: Python 3.9+; runtime scripts use only the standard library.
 
 ```bash
-git clone https://github.com/YOUR_ACCOUNT/de-starter.git
+git clone https://github.com/alisas-cell/de-starter.git
 mkdir -p "$HOME/.agents/skills"
 cp -R de-starter/skills/de-starter "$HOME/.agents/skills/de-starter"
 ```
 
-Replace `YOUR_ACCOUNT` with the repository owner after publication.
+The public repository is maintained at `alisas-cell/de-starter`.
 
 ## Use
 
@@ -2410,7 +2410,7 @@ Use synthetic fixtures. Never commit purchased Starter code, proprietary assets,
 MIT
 ```
 
-The `YOUR_ACCOUNT` installation token is public documentation that is replaced once the user approves the GitHub account in Task 15; it is not a runtime brand placeholder.
+The installation URL uses the approved public owner `alisas-cell`; it is not a runtime brand placeholder.
 
 - [ ] **Step 2: Add repository license and changelog**
 
