@@ -55,3 +55,9 @@ The useful claim is not “all occurrences of the word starter disappeared.” A
 ## Privacy boundary
 
 This public summary contains only aggregate results and generic descriptions. The detailed audit, exact diff, target paths, source terms, token, backup map, reverse diff, and private screenshots remain outside the Git repository.
+
+## Public refusal evidence and current release
+
+The purchased Starter was not used for destructive demonstrations. A separate fully synthetic public lab proves that a wrong token and a stale preview both refuse before project writes, backup creation, or partial approved edits.
+
+The current `v0.1.2` repository passes 214/214 regression tests and the Python 3.9, 3.11, and 3.13 GitHub Actions matrix. Risk remains non-zero: a user-approved wrong decision can still produce an unwanted change. The release provides transaction rollback behavior and recovery evidence, but it does not provide a one-command restore feature.

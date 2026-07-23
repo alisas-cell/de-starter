@@ -2,6 +2,30 @@
 
 > 公开脱敏版。购买项目身份、私有路径、源码片段、素材、审批令牌、备份映射和凭据不进入 Git。
 
+## 一页结论
+
+| 公开指标 | 已验证结果 |
+| --- | ---: |
+| 文件发现 | 523 → 227（减少 296，降幅 56.6%） |
+| source-named 目录残留 | 1 → 0 |
+| P0 | 132 → 132 |
+| P1 | 52 → 35 |
+| P2 | 52 → 21 |
+| P3 | 287 → 39 |
+| 真实项目新增测试失败 | 0 |
+| de-starter v0.1.2 回归 | 214 / 214 |
+| GitHub CI | Python 3.9 / 3.11 / 3.13 全部通过 |
+
+这不是“把关键词清零”的实验。结论是：获批的卖家身份和样例残留被处理，法律证据与高风险兼容标识被保护，剩余发现全部保持可解释。
+
+## 证据来源不能混用
+
+| 证据来源 | 能证明什么 | 不能声称什么 |
+| --- | --- | --- |
+| 真实购买 Starter 验收 | P0–P3 处理、两道审批、523 → 227、目录 1 → 0、构建、测试和恢复材料 | 不公开源码、路径、token；不声称在真实项目中故意制造破坏 |
+| 公开合成实验 | 错误令牌拒绝、过期预览拒绝、没有部分写入、只有当前精确批准能够 Apply | 不冒充真实购买项目的破坏性实验 |
+| Skill 回归与 GitHub CI | 214 项回归及 Python 3.9 / 3.11 / 3.13 公开运行 | 不等同于所有 Starter、平台和文件系统零风险 |
+
 ## 1. 实验目的
 
 验证 `de-starter` 是否能在不破坏真实产品能力的前提下，把购买 Starter 中的卖家身份、演示残留和 source-named 空目录处理为可解释、可审批、可恢复的结果。
@@ -77,7 +101,7 @@ discover → audit → Gate 1 → external preview → Gate 2 → apply → veri
 
 | 检查 | 结果 |
 | --- | --- |
-| 通用 Skill 单元/集成回归 | 195 / 195 通过（ResourceWarning 严格模式） |
+| 通用 Skill 单元/集成回归 | 214 / 214 通过（ResourceWarning 严格模式） |
 | CLI 生命周期 | 13 / 13 通过 |
 | fresh-context 压力实验 | baseline 0 / 5 → final 5 / 5；九项 rubric 全部 5 / 5，variance 0 |
 | 独立全功能安全复审 | Approved；Critical 0 / Important 0 / Minor 0 |
@@ -105,6 +129,12 @@ discover → audit → Gate 1 → external preview → Gate 2 → apply → veri
 - `apply-result.json` 的实际修改、删除、重命名与目录清理列表。
 
 无法安全回滚时，系统保留外部 backup 并报告 incomplete rollback，不覆盖并发出现的外来对象。
+
+公开合成实验分别提交了错误令牌和 Preview 后已经过期的旧令牌，两次都在项目写入、backup 和 `apply-result.json` 产生前拒绝；inventory 保持一致，没有部分执行获批删除、重命名或目录清理。这两次拒绝不是在购买的真实项目里故意制造破坏。
+
+v0.1.2 保留事务失败自动回滚、外部字节备份、`restore.json`、`reverse.diff` 和 `apply-result.json`，但没有一键恢复命令。发生无法安全覆盖外来对象的恢复冲突时，系统保留 backup 并报告 incomplete rollback。
+
+低风险不等于零风险。用户明确批准的错误决策仍然可能造成不希望的修改，因此 Git 或可靠备份、两道人工检查和 Apply 后验证不能省略。
 
 ## 7. 为什么这个 Skill 不是一次性提示词
 
